@@ -25,12 +25,12 @@ local infos = {
 	},
 	{
 		key    = 'name',
-		value  = 'Test AI using the new C++ wrapper',
+		value  = 'ControllerAI (Communication Layer)',
 		desc   = 'human readable name.',
 	},
 	{
 		key    = 'description',
-		value  = 'This AI is for testing the C++ wrapper only.',
+		value  = 'Exposes game state via HTTP server (port 3017) and accepts JSON commands from external services.',
 		desc   = 'tooltip.',
 	},
 	{

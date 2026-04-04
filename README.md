@@ -5,16 +5,17 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 ## How it Works
 
 1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. It starts a background HTTP server on `localhost:3017`.
-2.  **Observation**: Every game frame (or on specific events), the AI updates its internal state. External services can poll this state.
-3.  **Commands**: External services POST JSON commands to the AI. These commands are queued and executed on the next engine update.
+2.  **Observation**: Every game frame (and during the pre-match phase), the AI updates its internal state. External services poll this state via `/observation`.
+3.  **Commands**: External services POST JSON commands to `/command`. These are executed on the next engine update.
+4.  **Synchronous Control**: By default, the engine pauses at the end of every frame until you send a `finish_frame` command.
 
 ## Configuration
 
 You can configure the binding address and port through the engine's AI options (typically in the game setup or `AIOptions.lua`):
 
-- **Binding Address (`ip`)**: The IP the server binds to. Default: `0.0.0.0`.
+- **Binding Address (`ip`)**: The IP the server binds to. Default: `127.0.0.1`.
 - **Server Port (`port`)**: The port the server listens on. Default: `3017`.
-- **Synchronous Mode (`sync`)**: If `true`, the engine thread blocks at the end of every update until a `finish_frame` command is received. Default: `false`.
+- **Synchronous Mode (`sync`)**: If `true`, the engine thread blocks at the end of every update until a `finish_frame` command is received. **Default: `true`**.
 
 ## API Endpoints
 
@@ -42,20 +43,10 @@ Returns the current snapshot of the game state and events since the last poll.
       "isBeingBuilt": false
     }
   },
-  "enemies": {
-    "2048": {
-      "pos": [900.0, 0.0, 850.0],
-      "defId": 60,
-      "health": 500.0
-    }
-  },
-  "economy": {
-    "metal": { "current": 500.0, "storage": 1000.0, "income": 10.5, "usage": 5.0 },
-    "energy": { "current": 2000.0, "storage": 2000.0, "income": 50.0, "usage": 20.0 }
-  },
+  "enemies": { ... },
+  "economy": { ... },
   "events": [
-    { "topic": 2, "unitId": 1025, "builderId": 1024 },
-    { "topic": 5, "unitId": 1020, "attackerId": 2048 }
+    { "topic": 2, "unitId": 1025, "builderId": 1024 }
   ]
 }
 ```
@@ -63,42 +54,34 @@ Returns the current snapshot of the game state and events since the last poll.
 ### 2. `GET /metadata`
 Returns static data about all unit types available in the current game/mod.
 
-### 3. `GET /map_features`
-Returns positions of resource spots (metal/energy) and map features (trees, rocks, wrecks).
+### 3. `GET /spawn_boxes`
+Returns the defined start boxes for each ally team.
+- **Keys**: Ally Team IDs.
+- **Values**: `{ "left", "top", "right", "bottom" }` in map coordinates (elmos).
 
-### 4. `GET /spawn_boxes`
-Returns the defined start boxes for each ally team (if available).
-- Keys are ally team IDs.
-- Values are `{ "left", "top", "right", "bottom" }` in absolute map elmos.
+### 4. `GET /map_features`
+Returns resource spots and map features (trees, rocks, etc.).
 
 ### 5. `GET /heightmap`
-Returns the current dynamic heightmap of the map.
-- **width**, **height**: Dimensions of the heightmap.
-- **data_b64**: Base64 encoded string of raw `float32` values. 
+Returns the dynamic heightmap as a Base64 encoded string of `float32` values.
 
 ### 6. `POST /command`
-Sends one or more commands to the game engine.
+Sends a command to the engine. Standard fields: `unitId`, `type`, `pos`, `targetId`, `options`.
 
-**Standard Command Fields:**
-- `unitId` (integer): The unit to receive the command (ignored for `set_start_pos`, `finish_frame`, `lua`).
-- `options` (integer, optional): Bitmask (1=Shift/Queue, 2=RightClick, 4=Alt, 8=Ctrl).
-- `pos` (array of 3 floats, optional): Target position `[x, y, z]`.
+**Match Start Command:**
+- `set_start_pos`: Set your initial spawn point. Requires `pos`.
 
-**Command Types:**
-- **`set_start_pos`**: Set your initial spawn point. Requires `pos`. Validates against spawn boxes and engine rules.
-- `move`, `patrol`, `fight`: Requires `pos`.
-- `attack`, `guard`, `repair`, `capture`: Requires `targetId`.
-- `stop`, `wait`, `self_destruct`: No extra fields required.
-- `build`: Requires `defId`, `pos`, and optional `facing` (0-3).
-- `reclaim`: Requires either `targetId` or `featureId`.
-- `resurrect`: Requires `featureId`.
-- **`custom`**: Directly trigger an engine `cmdId`. Requires `cmdId` (int) and `params` (array of floats).
-- **`lua`**: Execute a raw string in `LuaRules`. Requires `data` (string).
-- **`finish_frame`**: Signals the engine to proceed to the next frame (when in Synchronous mode).
+**Unit Commands:**
+- `move`, `patrol`, `fight`, `attack`, `guard`, `repair`, `reclaim`, `resurrect`, `capture`, `stop`, `wait`, `self_destruct`.
 
-## Getting Started (Python Example, non-synchronous)
+**Special Commands:**
+- `custom`: Trigger raw engine `cmdId`.
+- `lua`: Execute a raw string in `LuaRules`.
+- `finish_frame`: Resume engine execution (Synchronous Mode).
 
-Note: Synchronous mode is **enabled** by default in `AIOptions.lua`. By default, the example below will appear to "hang" the engine unless synchronous mode is turned off.
+## Complete Match Lifecycle (Python Example)
+
+This example shows how to wait for the match to initialize, choose a start position within your box, and run a synchronous game loop.
 
 ```python
 import requests
@@ -107,57 +90,53 @@ import time
 URL = "http://localhost:3017"
 
 def main():
+    print("Waiting for match initialization...")
+    
+    # 1. Initialization Phase
     while True:
-        # 1. Get State
+        try:
+            obs = requests.get(f"{URL}/observation").json()
+            break
+        except:
+            time.sleep(0.5)
+    
+    print(f"Match Loaded. My AllyTeam: {obs['allyTeamId']}")
+
+    # 2. Match Start: Choose Position
+    boxes = requests.get(f"{URL}/spawn_boxes").json()
+    my_box = boxes.get(str(obs['allyTeamId']))
+    
+    if my_box:
+        # Pick center of your start box
+        cx = (my_box['left'] + my_box['right']) / 2
+        cz = (my_box['top'] + my_box['bottom']) / 2
+        print(f"Setting start position: {cx}, {cz}")
+        requests.post(f"{URL}/command", json={
+            "type": "set_start_pos",
+            "pos": [cx, 0, cz]
+        })
+    
+    # 3. Game Loop (Synchronous)
+    while True:
         obs = requests.get(f"{URL}/observation").json()
-        print(f"Frame: {obs['frame']}")
+        frame = obs['frame']
+        
+        # --- YOUR AI LOGIC HERE ---
+        if frame % 100 == 0:
+            print(f"Processing Frame {frame}...")
 
-        # 2. Logic (Example: Move first unit to center)
-        if obs['units']:
-            first_id = list(obs['units'].keys())[0]
+        # Move units if any exist
+        for uid in obs['units']:
             requests.post(f"{URL}/command", json={
-                "type": "move",
-                "unitId": int(first_id),
-                "pos": [1000, 0, 1000]
+                "type": "move", "unitId": int(uid), "pos": [1000, 0, 1000]
             })
-
-        time.sleep(1) # Poll every second
+        
+        # 4. Advance to next frame
+        requests.post(f"{URL}/command", json={"type": "finish_frame"})
 
 if __name__ == "__main__":
     main()
 ```
 
-## Synchronous Mode Example (Step-by-Step)
-
-When `sync` is enabled (which is the default) in `AIOptions.lua`, the engine thread blocks at the end of every update until a `finish_frame` command is received. This is ideal for Reinforcement Learning or precise debugging.
-
-```python
-import requests
-
-URL = "http://localhost:3017"
-
-def run_step():
-    # 1. Get current state (Engine is waiting for us)
-    obs = requests.get(f"{URL}/observation").json()
-    print(f"Processing Frame: {obs['frame']}")
-
-    # 2. Issue multiple commands
-    if obs['units']:
-        for uid in obs['units']:
-            requests.post(f"{URL}/command", json={
-                "type": "move", 
-                "unitId": int(uid), 
-                "pos": [1000, 0, 1000]
-            })
-
-    # 3. Tell the engine we are done with this frame
-    # Engine will process commands and advance to next frame
-    requests.post(f"{URL}/command", json={"type": "finish_frame"})
-
-if __name__ == "__main__":
-    while True:
-        run_step()
-```
-
 ## Performance Note
-ControllerAI is designed for flexibility. For ultra-high-performance AIs requiring sub-millisecond latency, consider implementing your logic directly in C++ using the `CircuitAI` or `BARb` patterns. For most RTS automation and experimental AI, the HTTP overhead is negligible compared to the 30 FPS game simulation.
+ControllerAI defaults to Synchronous Mode (`sync=true`) to ensure external services never miss a frame. For non-blocking "real-time" behavior, set `sync = false` in `AIOptions.lua`.

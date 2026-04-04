@@ -31,7 +31,7 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     callback(callback),
     skirmishAIId(callback != nullptr ? callback->GetSkirmishAIId() : -1),
     running(true),
-    synchronousMode(false),
+    synchronousMode(true),
     frameFinished(true),
     eventBuffer(json::array())
 {

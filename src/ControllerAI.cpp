@@ -516,8 +516,10 @@ json CControllerAI::EventToJson(int topic, const void* data) {
     json e;
     e["topic"] = topic;
     switch (topic) {
-        case EVENT_GAME_START: {
-            e["name"] = "GameStart";
+        case EVENT_INIT: {
+            struct SInitEvent* ev = (struct SInitEvent*)data;
+            e["name"] = "Init";
+            e["isSavegame"] = ev->savedGame;
             break;
         }
         case EVENT_UNIT_CREATED: {
@@ -576,12 +578,22 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     // We block the engine thread at frame -1 until the AI is ready.
     const std::unique_ptr<springai::Game> game(callback->GetGame());
     if (game && game->GetCurrentFrame() < 0 && !setupComplete) {
+        auto start = std::chrono::steady_clock::now();
+        bool warned = false;
         while (!setupComplete && running) {
             UpdateObservation(); // Refresh for the poll
             ProcessCommands();
             if (setupComplete) break;
             std::unique_lock<std::mutex> lock(cvMutex);
-            cv.wait(lock); // Wake up on notify from ServerThread
+            if (cv.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::timeout) {
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+                if (elapsed >= 10 && !warned) {
+                    const std::unique_ptr<springai::Log> log(callback->GetLog());
+                    if (log) log->DoLog("ControllerAI Warning: Engine has been blocked for more than 10s during setup phase! Waiting for set_start_pos command.");
+                    warned = true;
+                }
+            }
         }
     }
 
@@ -592,8 +604,24 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
             frameFinished = false;
         }
         
+        auto start = std::chrono::steady_clock::now();
+        bool warned = false;
         std::unique_lock<std::mutex> lock(cvMutex);
-        cv.wait(lock, [this]{ return frameFinished || !running; });
+        while (!frameFinished && running) {
+            if (cv.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::timeout) {
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+                if (elapsed >= 10 && !warned) {
+                    const std::unique_ptr<springai::Log> log(callback->GetLog());
+                    if (log) {
+                        std::stringstream ss;
+                        ss << "ControllerAI Warning: Engine has been blocked for more than 10s on frame " << game->GetCurrentFrame() << "! Waiting for finish_frame command.";
+                        log->DoLog(ss.str().c_str());
+                    }
+                    warned = true;
+                }
+            }
+        }
     }
     
     return 0;

@@ -94,7 +94,9 @@ Directly call `LuaRules` (Gadgets) with a raw string.
 }
 ```
 
-## Getting Started (Python Example)
+## Getting Started (Python Example, non-synchronous)
+
+Note: Synchronous mode is the default; without changing AIOptions.lua, this example will hang.
 
 ```python
 import requests
@@ -125,7 +127,7 @@ if __name__ == "__main__":
 
 ## Synchronous Mode Example (Step-by-Step)
 
-When `sync` is enabled in `AIOptions.lua`, the engine thread blocks at the end of every update until a `finish_frame` command is received. This is ideal for Reinforcement Learning or precise debugging.
+When `sync` is enabled (which is the default) in `AIOptions.lua`, the engine thread blocks at the end of every update until a `finish_frame` command is received. This is ideal for Reinforcement Learning or precise debugging.
 
 ```python
 import requests
@@ -154,11 +156,6 @@ if __name__ == "__main__":
     while True:
         run_step()
 ```
-
-## Requirements for Compilation
-To compile ControllerAI from source, ensure the following headers are in your include path:
-- `httplib.h` from [cpp-httplib](https://github.com/yhirose/cpp-httplib)
-- `nlohmann/json.hpp` from [nlohmann/json](https://github.com/nlohmann/json)
 
 ## Performance Note
 ControllerAI is designed for flexibility. For ultra-high-performance AIs requiring sub-millisecond latency, consider implementing your logic directly in C++ using the `CircuitAI` or `BARb` patterns. For most RTS automation and experimental AI, the HTTP overhead is negligible compared to the 30 FPS game simulation.

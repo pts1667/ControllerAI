@@ -6,8 +6,9 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 
 1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. It starts a background HTTP server on `localhost:3017`.
 2.  **Observation**: Every game frame (and during the pre-match phase), the AI updates its internal state. External services poll this state via `/observation`.
-3.  **Commands**: External services POST JSON commands to `/command`. These are executed on the next engine update.
-4.  **Synchronous Control**: By default, the engine pauses at the end of every frame until you send a `finish_frame` command.
+3.  **Game Info**: External services can query `/game_info` during startup to discover map metadata, game mode, pause state, and whether the AI is still allowed to choose its start position.
+4.  **Commands**: External services POST JSON commands to `/command`. These are executed on the next engine update.
+5.  **Synchronous Control**: By default, the engine pauses at the end of every frame until you send a `finish_frame` command.
 
 ## Configuration
 
@@ -59,17 +60,39 @@ Returns the defined start boxes for each ally team.
 - **Keys**: Ally Team IDs.
 - **Values**: `{ "left", "top", "right", "bottom" }` in map coordinates (elmos).
 
-### 4. `GET /map_features`
+### 4. `GET /game_info`
+Returns startup metadata for the current match.
+
+Typical startup flow:
+1. Poll `/observation` until the AI is initialized.
+2. Read `/game_info` to check whether startup setup is still available.
+3. If the game allows it, send `set_commander` before choosing a start position.
+4. If `canChooseStartPos` is true, read `/spawn_boxes` and send `set_start_pos`.
+5. Call `finish_frame` to let the match proceed.
+
+**Example Response:**
+```json
+{
+  "modName": "Balanced Annihilation",
+  "mapName": "TitanDuel 2.2",
+  "gameMode": 0,
+  "isPaused": true,
+  "canChooseStartPos": true
+}
+```
+
+### 5. `GET /map_features`
 Returns resource spots and map features (trees, rocks, etc.).
 
-### 5. `GET /heightmap`
+### 6. `GET /heightmap`
 Returns the dynamic heightmap as a Base64 encoded string of `float32` values.
 
-### 6. `POST /command`
+### 7. `POST /command`
 Sends a command to the engine. Standard fields: `unitId`, `type`, `pos`, `targetId`, `options`.
 
 **Match Start Command:**
 - `set_start_pos`: Set your initial spawn point. Requires `pos`.
+- `set_commander`: Select the initial commander loadout for this match. Requires `name`.
 
 **Unit Commands:**
 - `move`, `patrol`, `fight`, `attack`, `guard`, `repair`, `reclaim`, `resurrect`, `capture`, `stop`, `wait`, `self_destruct`.
@@ -81,7 +104,7 @@ Sends a command to the engine. Standard fields: `unitId`, `type`, `pos`, `target
 
 ## Complete Match Lifecycle (Python Example)
 
-This example shows how to wait for the match to initialize, choose a start position within your box, and run a synchronous game loop.
+This example shows how to wait for the match to initialize, read startup metadata, choose a start position within your box, and run a synchronous game loop.
 
 ```python
 import requests
@@ -102,7 +125,10 @@ def main():
     
     print(f"Match Loaded. My AllyTeam: {obs['allyTeamId']}")
 
-    # 2. Match Start: Choose Position
+    # 2. Match Start: Read startup metadata and choose setup
+    info = requests.get(f"{URL}/game_info").json()
+    print(f"Map: {info['mapName']} | Mode: {info['gameMode']} | CanChooseStartPos: {info['canChooseStartPos']}")
+
     boxes = requests.get(f"{URL}/spawn_boxes").json()
     my_box = boxes.get(str(obs['allyTeamId']))
     
@@ -115,6 +141,12 @@ def main():
             "type": "set_start_pos",
             "pos": [cx, 0, cz]
         })
+
+    # Commander selection can be sent during startup as well.
+    requests.post(f"{URL}/command", json={
+        "type": "set_commander",
+        "name": "dyntrainer_strike_base"
+    })
     
     # 3. Game Loop (Synchronous)
     while True:

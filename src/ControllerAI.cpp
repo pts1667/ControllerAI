@@ -15,6 +15,8 @@
 #include "Economy.h"
 #include "Cheats.h"
 #include "Lua.h"
+#include "SkirmishAI.h"
+#include "OptionValues.h"
 
 #include <iostream>
 #include <chrono>
@@ -32,21 +34,28 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     eventBuffer(json::array())
 {
     // Load options from engine
-    const std::map<std::string, std::string>& options = callback->GetOptionValues();
+    springai::SkirmishAI* ai = callback->GetSkirmishAI();
+    springai::OptionValues* options = ai->GetOptionValues();
     
     bindAddress = "0.0.0.0";
-    if (options.count("ip")) {
-        bindAddress = options.at("ip");
+    const char* ip_opt = options->GetValueByKey("ip");
+    if (ip_opt != nullptr) {
+        bindAddress = ip_opt;
     }
 
     port = 3017;
-    if (options.count("port")) {
-        port = std::stoi(options.at("port"));
+    const char* port_opt = options->GetValueByKey("port");
+    if (port_opt != nullptr) {
+        port = std::stoi(port_opt);
     }
 
-    if (options.count("sync")) {
-        synchronousMode = (options.at("sync") == "true");
+    const char* sync_opt = options->GetValueByKey("sync");
+    if (sync_opt != nullptr) {
+        synchronousMode = (std::string(sync_opt) == "true");
     }
+
+    delete options;
+    delete ai;
 
     serverThread = std::thread(&CControllerAI::ServerThread, this);
 }
@@ -100,7 +109,7 @@ void CControllerAI::ServerThread() {
         for (springai::Feature* f : features) {
             json fj;
             fj["id"] = f->GetFeatureId();
-            springai::AIFloat3 f_pos = f->GetPos();
+            springai::AIFloat3 f_pos = f->GetPosition();
             fj["pos"] = json::array({f_pos.x, f_pos.y, f_pos.z});
             fj["health"] = f->GetHealth();
             const std::unique_ptr<springai::FeatureDef> def(f->GetDef());
@@ -280,7 +289,10 @@ void CControllerAI::ProcessCommands() {
             short opts = cmd.value("options", 0);
 
             if (type == "move" && unit) {
-                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                springai::AIFloat3 pos;
+                pos.x = cmd["pos"][0];
+                pos.y = cmd["pos"][1];
+                pos.z = cmd["pos"][2];
                 unit->MoveTo(pos, opts, 100000);
             } else if (type == "attack" && unit) {
                 int targetId = cmd["targetId"];
@@ -290,7 +302,10 @@ void CControllerAI::ProcessCommands() {
             } else if (type == "build" && unit) {
                 int defId = cmd["defId"];
                 springai::UnitDef* def = springai::WrappUnitDef::GetInstance(skirmishAIId, defId);
-                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                springai::AIFloat3 pos;
+                pos.x = cmd["pos"][0];
+                pos.y = cmd["pos"][1];
+                pos.z = cmd["pos"][2];
                 unit->Build(def, pos, cmd.value("facing", 0), opts, 100000);
                 delete def;
             } else if (type == "stop" && unit) {
@@ -298,10 +313,16 @@ void CControllerAI::ProcessCommands() {
             } else if (type == "wait" && unit) {
                 unit->Wait(opts, 100000);
             } else if (type == "patrol" && unit) {
-                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                springai::AIFloat3 pos;
+                pos.x = cmd["pos"][0];
+                pos.y = cmd["pos"][1];
+                pos.z = cmd["pos"][2];
                 unit->PatrolTo(pos, opts, 100000);
             } else if (type == "fight" && unit) {
-                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                springai::AIFloat3 pos;
+                pos.x = cmd["pos"][0];
+                pos.y = cmd["pos"][1];
+                pos.z = cmd["pos"][2];
                 unit->Fight(pos, opts, 100000);
             } else if (type == "guard" && unit) {
                 int targetId = cmd["targetId"];
@@ -400,7 +421,7 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
 
     // Capture events
     json ev = EventToJson(topic, data);
-    if (!ev.is_null()) {
+    if (!ev.is_null() && ev.contains("topic")) {
         std::lock_guard<std::mutex> lock(stateMutex);
         eventBuffer.push_back(ev);
     }

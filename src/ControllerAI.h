@@ -32,6 +32,7 @@ private:
     // State management
     std::mutex stateMutex;
     json lastObservation;
+    json eventBuffer; // Stores events since last observation poll
     bool running;
     bool synchronousMode;
 

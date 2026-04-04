@@ -5,7 +5,12 @@
 #include "Game.h"
 #include "Map.h"
 #include "Unit.h"
+#include "WrappUnit.h"
 #include "UnitDef.h"
+#include "WrappUnitDef.h"
+#include "Feature.h"
+#include "WrappFeature.h"
+#include "FeatureDef.h"
 #include "Resource.h"
 #include "Economy.h"
 #include "Cheats.h"
@@ -23,7 +28,8 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     skirmishAIId(callback != nullptr ? callback->GetSkirmishAIId() : -1),
     running(true),
     synchronousMode(false),
-    frameFinished(true)
+    frameFinished(true),
+    eventBuffer(json::array())
 {
     // Load options from engine
     const std::map<std::string, std::string>& options = callback->GetOptionValues();
@@ -78,11 +84,11 @@ void CControllerAI::ServerThread() {
         std::vector<springai::Resource*> resources = callback->GetResources();
         const std::unique_ptr<springai::Map> map(callback->GetMap());
         for (springai::Resource* res_ptr : resources) {
-            std::vector<springai::float3> spots = map->GetResourceMapSpotsPositions(res_ptr);
-            for (const auto& pos : spots) {
+            std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
+            for (const auto& spot_pos : spots) {
                 json s;
                 s["resource"] = res_ptr->GetName();
-                s["pos"] = {pos.x, pos.y, pos.z}; // y is value/income
+                s["pos"] = json::array({spot_pos.x, spot_pos.y, spot_pos.z}); // y is value/income
                 out["spots"].push_back(s);
             }
             delete res_ptr;
@@ -94,8 +100,8 @@ void CControllerAI::ServerThread() {
         for (springai::Feature* f : features) {
             json fj;
             fj["id"] = f->GetFeatureId();
-            springai::float3 pos = f->GetPos();
-            fj["pos"] = {pos.x, pos.y, pos.z};
+            springai::AIFloat3 f_pos = f->GetPos();
+            fj["pos"] = json::array({f_pos.x, f_pos.y, f_pos.z});
             fj["health"] = f->GetHealth();
             const std::unique_ptr<springai::FeatureDef> def(f->GetDef());
             if (def) fj["name"] = def->GetName();
@@ -207,9 +213,17 @@ void CControllerAI::UpdateObservation() {
     for (springai::Unit* unit : myUnits) {
         json u;
         u["defId"] = unit->GetDef()->GetUnitDefId();
-        springai::float3 pos = unit->GetPos();
-        u["pos"] = {pos.x, pos.y, pos.z};
+        springai::AIFloat3 pos = unit->GetPos();
+        springai::AIFloat3 vel = unit->GetVel();
+        u["pos"] = json::array({pos.x, pos.y, pos.z});
+        u["vel"] = json::array({vel.x, vel.y, vel.z});
         u["health"] = unit->GetHealth();
+        u["maxHealth"] = unit->GetMaxHealth();
+        u["experience"] = unit->GetExperience();
+        u["buildProgress"] = unit->GetBuildProgress();
+        u["isBeingBuilt"] = unit->IsBeingBuilt();
+        u["isCloaked"] = unit->IsCloaked();
+        u["isParalyzed"] = unit->IsParalyzed();
         obs["units"][std::to_string(unit->GetUnitId())] = u;
         delete unit;
     }
@@ -219,8 +233,16 @@ void CControllerAI::UpdateObservation() {
     std::vector<springai::Unit*> enemies = callback->GetEnemyUnits();
     for (springai::Unit* unit : enemies) {
         json e;
-        springai::float3 pos = unit->GetPos();
-        e["pos"] = {pos.x, pos.y, pos.z};
+        springai::AIFloat3 pos = unit->GetPos();
+        e["pos"] = json::array({pos.x, pos.y, pos.z});
+        
+        // defId and health might only be available in LOS (not radar-only)
+        springai::UnitDef* def = unit->GetDef();
+        if (def) {
+            e["defId"] = def->GetUnitDefId();
+        }
+        e["health"] = unit->GetHealth();
+        
         obs["enemies"][std::to_string(unit->GetUnitId())] = e;
         delete unit;
     }
@@ -229,17 +251,19 @@ void CControllerAI::UpdateObservation() {
     const std::unique_ptr<springai::Economy> eco(callback->GetEconomy());
     std::vector<springai::Resource*> resources = callback->GetResources();
     obs["economy"] = json::object();
-    for (springai::Resource* res : resources) {
+    for (springai::Resource* res_ptr : resources) {
         json r;
-        r["current"] = eco->GetCurrent(res);
-        r["storage"] = eco->GetStorage(res);
-        r["income"] = eco->GetIncome(res);
-        r["usage"] = eco->GetUsage(res);
-        obs["economy"][res->GetName()] = r;
-        delete res;
+        r["current"] = eco->GetCurrent(res_ptr);
+        r["storage"] = eco->GetStorage(res_ptr);
+        r["income"] = eco->GetIncome(res_ptr);
+        r["usage"] = eco->GetUsage(res_ptr);
+        obs["economy"][res_ptr->GetName()] = r;
+        delete res_ptr;
     }
 
     std::lock_guard<std::mutex> lock(stateMutex);
+    obs["events"] = eventBuffer;
+    eventBuffer = json::array(); // Clear buffer after poll
     lastObservation = obs;
 }
 
@@ -251,44 +275,79 @@ void CControllerAI::ProcessCommands() {
 
         try {
             std::string type = cmd["type"];
-            if (type == "move") {
-                int unitId = cmd["unitId"];
-                springai::Unit* unit = springai::Unit::GetInstance(skirmishAIId, unitId);
-                if (unit) {
-                    springai::float3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
-                    unit->MoveTo(pos, 0, 100000);
-                    delete unit;
-                }
-            } else if (type == "attack") {
-                int unitId = cmd["unitId"];
+            int unitId = cmd.value("unitId", -1);
+            springai::Unit* unit = (unitId != -1) ? springai::WrappUnit::GetInstance(skirmishAIId, unitId) : nullptr;
+            short opts = cmd.value("options", 0);
+
+            if (type == "move" && unit) {
+                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                unit->MoveTo(pos, opts, 100000);
+            } else if (type == "attack" && unit) {
                 int targetId = cmd["targetId"];
-                springai::Unit* unit = springai::Unit::GetInstance(skirmishAIId, unitId);
-                springai::Unit* target = springai::Unit::GetInstance(skirmishAIId, targetId);
-                if (unit && target) {
-                    unit->Attack(target, 0, 100000);
-                }
-                delete unit;
+                springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, targetId);
+                if (target) unit->Attack(target, opts, 100000);
                 delete target;
-            } else if (type == "build") {
-                int unitId = cmd["unitId"];
+            } else if (type == "build" && unit) {
                 int defId = cmd["defId"];
-                springai::Unit* unit = springai::Unit::GetInstance(skirmishAIId, unitId);
-                if (unit) {
-                    springai::UnitDef* def = springai::UnitDef::GetInstance(skirmishAIId, defId);
-                    springai::float3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
-                    unit->Build(def, pos, 0, 0, 100000);
-                    delete unit;
-                    delete def;
+                springai::UnitDef* def = springai::WrappUnitDef::GetInstance(skirmishAIId, defId);
+                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                unit->Build(def, pos, cmd.value("facing", 0), opts, 100000);
+                delete def;
+            } else if (type == "stop" && unit) {
+                unit->Stop(opts, 100000);
+            } else if (type == "wait" && unit) {
+                unit->Wait(opts, 100000);
+            } else if (type == "patrol" && unit) {
+                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                unit->PatrolTo(pos, opts, 100000);
+            } else if (type == "fight" && unit) {
+                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                unit->Fight(pos, opts, 100000);
+            } else if (type == "guard" && unit) {
+                int targetId = cmd["targetId"];
+                springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, targetId);
+                if (target) unit->Guard(target, opts, 100000);
+                delete target;
+            } else if (type == "repair" && unit) {
+                int targetId = cmd["targetId"];
+                springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, targetId);
+                if (target) unit->Repair(target, opts, 100000);
+                delete target;
+            } else if (type == "reclaim" && unit) {
+                if (cmd.contains("targetId")) {
+                    springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, cmd["targetId"]);
+                    if (target) unit->ReclaimUnit(target, opts, 100000);
+                    delete target;
+                } else if (cmd.contains("featureId")) {
+                    springai::Feature* feature = springai::WrappFeature::GetInstance(skirmishAIId, cmd["featureId"]);
+                    if (feature) unit->ReclaimFeature(feature, opts, 100000);
+                    delete feature;
                 }
+            } else if (type == "resurrect" && unit) {
+                springai::Feature* feature = springai::WrappFeature::GetInstance(skirmishAIId, cmd["featureId"]);
+                if (feature) unit->Resurrect(feature, opts, 100000);
+                delete feature;
+            } else if (type == "capture" && unit) {
+                int targetId = cmd["targetId"];
+                springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, targetId);
+                if (target) unit->Capture(target, opts, 100000);
+                delete target;
+            } else if (type == "self_destruct" && unit) {
+                unit->SelfDestruct(opts, 100000);
+            } else if (type == "custom" && unit) {
+                int cmdId = cmd["cmdId"];
+                std::vector<float> params = cmd.value("params", std::vector<float>());
+                unit->ExecuteCustomCommand(cmdId, params, opts, 100000);
             } else if (type == "lua") {
                 const std::unique_ptr<springai::Lua> lua(callback->GetLua());
                 std::string data = cmd["data"];
-                lua->CallRules(data.c_str());
+                lua->CallRules(data.c_str(), (int)data.size());
             } else if (type == "finish_frame") {
                 std::lock_guard<std::mutex> lock(cvMutex);
                 frameFinished = true;
                 cv.notify_one();
             }
+            delete unit;
         } catch (...) {}
     }
 }
@@ -337,6 +396,13 @@ json CControllerAI::EventToJson(int topic, const void* data) {
 int CControllerAI::HandleEvent(int topic, const void* data) {
     if (topic == EVENT_INIT) {
         CacheMetadata();
+    }
+
+    // Capture events
+    json ev = EventToJson(topic, data);
+    if (!ev.is_null()) {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        eventBuffer.push_back(ev);
     }
 
     UpdateObservation();

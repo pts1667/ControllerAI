@@ -21,7 +21,7 @@ You can configure the binding address and port through the engine's AI options (
 The server runs on `http://localhost:3017`.
 
 ### 1. `GET /observation`
-Returns the current snapshot of the game state.
+Returns the current snapshot of the game state and events since the last poll.
 
 **Example Response:**
 ```json
@@ -31,88 +31,61 @@ Returns the current snapshot of the game state.
     "1024": {
       "defId": 52,
       "health": 1200.0,
-      "pos": [150.5, 12.0, 300.2]
+      "maxHealth": 1200.0,
+      "pos": [150.5, 12.0, 300.2],
+      "vel": [0.0, 0.0, 0.0],
+      "experience": 0.05,
+      "buildProgress": 1.0,
+      "isBeingBuilt": false
     }
   },
   "enemies": {
     "2048": {
-      "pos": [900.0, 0.0, 850.0]
+      "pos": [900.0, 0.0, 850.0],
+      "defId": 60,
+      "health": 500.0
     }
   },
   "economy": {
-    "metal": {
-      "current": 500.0,
-      "storage": 1000.0,
-      "income": 10.5,
-      "usage": 5.0
-    },
+    "metal": { "current": 500.0, "storage": 1000.0, "income": 10.5, "usage": 5.0 },
     "energy": { "current": 2000.0, "storage": 2000.0, "income": 50.0, "usage": 20.0 }
-  }
+  },
+  "events": [
+    { "topic": 2, "unitId": 1025, "builderId": 1024 },
+    { "topic": 5, "unitId": 1020, "attackerId": 2048 }
+  ]
 }
 ```
 
 ### 2. `GET /metadata`
-Returns static data about all unit types available in the current game/mod. Useful for mapping `defId` to human-readable names and stats.
+Returns static data about all unit types available in the current game/mod.
 
 ### 3. `GET /map_features`
 Returns positions of resource spots (metal/energy) and map features (trees, rocks, wrecks).
-- **spots**: Array of `{ "resource": "metal", "pos": [x, y, z] }`.
-- **features**: Array of `{ "id": 1, "name": "tree1", "pos": [x, y, z], "health": 100 }`.
 
 ### 4. `GET /heightmap`
 Returns the current dynamic heightmap of the map.
 - **width**, **height**: Dimensions of the heightmap.
 - **data_b64**: Base64 encoded string of raw `float32` values. 
 
-**Python Decoding Example:**
-```python
-import base64
-import numpy as np
-
-res = requests.get(f"{URL}/heightmap").json()
-raw_data = base64.b64decode(res['data_b64'])
-heights = np.frombuffer(raw_data, dtype=np.float32).reshape((res['height'], res['width']))
-```
-
 ### 5. `POST /command`
-Sends a command to the game engine.
+Sends one or more commands to the game engine.
 
-**Move Command:**
-```json
-{
-  "type": "move",
-  "unitId": 1024,
-  "pos": [500.0, 0.0, 500.0]
-}
-```
+**Standard Command Fields:**
+- `unitId` (integer): The unit to receive the command.
+- `options` (integer, optional): Bitmask (1=Shift/Queue, 2=RightClick, 4=Alt, 8=Ctrl).
+- `pos` (array of 3 floats, optional): Target position `[x, y, z]`.
 
-**Attack Command:**
-```json
-{
-  "type": "attack",
-  "unitId": 1024,
-  "targetId": 2048
-}
-```
-
-**Build Command:**
-```json
-{
-  "type": "build",
-  "unitId": 1024,
-  "defId": 60,
-  "pos": [200.0, 0.0, 200.0]
-}
-```
-
-**Lua/Custom Command:**
-Directly call `LuaRules` (Gadgets) with a raw string.
-```json
-{
-  "type": "lua",
-  "data": "custom_gadget_event:target=1024"
-}
-```
+**Command Types:**
+- `move`, `patrol`, `fight`: Requires `pos`.
+- `attack`, `guard`, `repair`, `capture`: Requires `targetId`.
+- `stop`, `wait`, `self_destruct`: No extra fields required.
+- `build`: Requires `defId`, `pos`, and optional `facing` (0-3).
+- `reclaim`: Requires either `targetId` or `featureId`.
+- `resurrect`: Requires `featureId`.
+- **`custom`**: Directly trigger an engine `cmdId`. Requires `cmdId` (int) and `params` (array of floats).
+- **`lua`**: Execute a raw string in `LuaRules`. Requires `data` (string).
+- **`finish_frame`**: Signals the engine to proceed to the next frame (when in Synchronous mode).
 
 ## Getting Started (Python Example, non-synchronous)
 

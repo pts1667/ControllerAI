@@ -8,6 +8,14 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 2.  **Observation**: Every game frame (or on specific events), the AI updates its internal state. External services can poll this state.
 3.  **Commands**: External services POST JSON commands to the AI. These commands are queued and executed on the next engine update.
 
+## Configuration
+
+You can configure the binding address and port through the engine's AI options (typically in the game setup or `AIOptions.lua`):
+
+- **Binding Address (`ip`)**: The IP the server binds to. Default: `0.0.0.0`.
+- **Server Port (`port`)**: The port the server listens on. Default: `3017`.
+- **Synchronous Mode (`sync`)**: If `true`, the engine thread blocks at the end of every update until a `finish_frame` command is received. Default: `false`.
+
 ## API Endpoints
 
 The server runs on `http://localhost:3017`.
@@ -113,6 +121,38 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+
+## Synchronous Mode Example (Step-by-Step)
+
+When `sync` is enabled in `AIOptions.lua`, the engine thread blocks at the end of every update until a `finish_frame` command is received. This is ideal for Reinforcement Learning or precise debugging.
+
+```python
+import requests
+
+URL = "http://localhost:3017"
+
+def run_step():
+    # 1. Get current state (Engine is waiting for us)
+    obs = requests.get(f"{URL}/observation").json()
+    print(f"Processing Frame: {obs['frame']}")
+
+    # 2. Issue multiple commands
+    if obs['units']:
+        for uid in obs['units']:
+            requests.post(f"{URL}/command", json={
+                "type": "move", 
+                "unitId": int(uid), 
+                "pos": [1000, 0, 1000]
+            })
+
+    # 3. Tell the engine we are done with this frame
+    # Engine will process commands and advance to next frame
+    requests.post(f"{URL}/command", json={"type": "finish_frame"})
+
+if __name__ == "__main__":
+    while True:
+        run_step()
 ```
 
 ## Requirements for Compilation

@@ -12,6 +12,7 @@
 #include <queue>
 #include <map>
 #include <atomic>
+#include <condition_variable>
 
 namespace controllerai {
 
@@ -25,11 +26,19 @@ private:
     // HTTP Server
     httplib::Server svr;
     std::thread serverThread;
+    std::string bindAddress;
+    int port;
     
     // State management
     std::mutex stateMutex;
     json lastObservation;
-    std::atomic<bool> running;
+    bool running;
+    bool synchronousMode;
+
+    // Synchronous Mode control
+    std::condition_variable cv;
+    std::mutex cvMutex;
+    bool frameFinished;
 
     // Command Queue
     std::mutex commandQueueMutex;

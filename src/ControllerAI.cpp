@@ -19,8 +19,27 @@ namespace controllerai {
 CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     callback(callback),
     skirmishAIId(callback != nullptr ? callback->GetSkirmishAIId() : -1),
-    running(true)
+    running(true),
+    synchronousMode(false),
+    frameFinished(true)
 {
+    // Load options from engine
+    const std::map<std::string, std::string>& options = callback->GetOptionValues();
+    
+    bindAddress = "0.0.0.0";
+    if (options.count("ip")) {
+        bindAddress = options.at("ip");
+    }
+
+    port = 3017;
+    if (options.count("port")) {
+        port = std::stoi(options.at("port"));
+    }
+
+    if (options.count("sync")) {
+        synchronousMode = (options.at("sync") == "true");
+    }
+
     serverThread = std::thread(&CControllerAI::ServerThread, this);
 }
 
@@ -59,7 +78,7 @@ void CControllerAI::ServerThread() {
         }
     });
 
-    svr.listen("0.0.0.0", 3017);
+    svr.listen(bindAddress.c_str(), port);
 }
 
 void CControllerAI::CacheMetadata() {
@@ -171,6 +190,10 @@ void CControllerAI::ProcessCommands() {
                 const std::unique_ptr<springai::Lua> lua(callback->GetLua());
                 std::string data = cmd["data"];
                 lua->CallRules(data.c_str());
+            } else if (type == "finish_frame") {
+                std::lock_guard<std::mutex> lock(cvMutex);
+                frameFinished = true;
+                cv.notify_one();
             }
         } catch (...) {}
     }
@@ -218,9 +241,6 @@ json CControllerAI::EventToJson(int topic, const void* data) {
 }
 
 int CControllerAI::HandleEvent(int topic, const void* data) {
-    // Forward all events as "last_event" or similar? 
-    // For now, update state on important ones.
-    
     if (topic == EVENT_INIT) {
         CacheMetadata();
     }
@@ -228,9 +248,17 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     UpdateObservation();
     ProcessCommands();
 
-    // We could also have a websocket or long-poll for events.
-    // For a simple HTTP server, we'll just store the last few events or 
-    // let the user poll /observation which is updated here.
+    // In synchronous mode, we block the engine thread at the end of every frame
+    // until the external service tells us to continue.
+    if (synchronousMode && topic == EVENT_UPDATE) {
+        {
+            std::lock_guard<std::mutex> lock(cvMutex);
+            frameFinished = false;
+        }
+        
+        std::unique_lock<std::mutex> lock(cvMutex);
+        cv.wait(lock, [this]{ return frameFinished || !running; });
+    }
     
     return 0;
 }

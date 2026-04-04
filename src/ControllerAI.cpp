@@ -18,6 +18,7 @@
 #include "Mod.h"
 #include "SkirmishAI.h"
 #include "OptionValues.h"
+#include "Log.h"
 
 #include <iostream>
 #include <chrono>

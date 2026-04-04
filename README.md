@@ -27,6 +27,9 @@ Returns the current snapshot of the game state and events since the last poll.
 ```json
 {
   "frame": 450,
+  "aiId": 1,
+  "teamId": 0,
+  "allyTeamId": 0,
   "units": {
     "1024": {
       "defId": 52,
@@ -63,20 +66,26 @@ Returns static data about all unit types available in the current game/mod.
 ### 3. `GET /map_features`
 Returns positions of resource spots (metal/energy) and map features (trees, rocks, wrecks).
 
-### 4. `GET /heightmap`
+### 4. `GET /spawn_boxes`
+Returns the defined start boxes for each ally team (if available).
+- Keys are ally team IDs.
+- Values are `{ "left", "top", "right", "bottom" }` in absolute map elmos.
+
+### 5. `GET /heightmap`
 Returns the current dynamic heightmap of the map.
 - **width**, **height**: Dimensions of the heightmap.
 - **data_b64**: Base64 encoded string of raw `float32` values. 
 
-### 5. `POST /command`
+### 6. `POST /command`
 Sends one or more commands to the game engine.
 
 **Standard Command Fields:**
-- `unitId` (integer): The unit to receive the command.
+- `unitId` (integer): The unit to receive the command (ignored for `set_start_pos`, `finish_frame`, `lua`).
 - `options` (integer, optional): Bitmask (1=Shift/Queue, 2=RightClick, 4=Alt, 8=Ctrl).
 - `pos` (array of 3 floats, optional): Target position `[x, y, z]`.
 
 **Command Types:**
+- **`set_start_pos`**: Set your initial spawn point. Requires `pos`. Validates against spawn boxes and engine rules.
 - `move`, `patrol`, `fight`: Requires `pos`.
 - `attack`, `guard`, `repair`, `capture`: Requires `targetId`.
 - `stop`, `wait`, `self_destruct`: No extra fields required.
@@ -89,7 +98,7 @@ Sends one or more commands to the game engine.
 
 ## Getting Started (Python Example, non-synchronous)
 
-Note: Synchronous mode is the default; without changing AIOptions.lua, this example will hang.
+Note: Synchronous mode is **enabled** by default in `AIOptions.lua`. By default, the example below will appear to "hang" the engine unless synchronous mode is turned off.
 
 ```python
 import requests

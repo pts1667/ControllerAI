@@ -57,6 +57,10 @@ private:
     json unitDefsCache;
     void CacheMetadata();
 
+    json spawnBoxes;
+    void ParseSpawnBoxes();
+    bool IsSpawnPosValid(const springai::AIFloat3& pos);
+
     std::string Base64Encode(const unsigned char* data, size_t len);
 
 public:

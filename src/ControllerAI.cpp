@@ -22,6 +22,8 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdint>
+#include <regex>
+#include <sstream>
 
 namespace controllerai {
 
@@ -57,6 +59,9 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     delete options;
     delete ai;
 
+    ParseSpawnBoxes();
+    UpdateObservation(); // Generate frame -1 observation
+
     serverThread = std::thread(&CControllerAI::ServerThread, this);
 }
 
@@ -79,6 +84,10 @@ void CControllerAI::ServerThread() {
             CacheMetadata();
         }
         res.set_content(unitDefsCache.dump(), "application/json");
+    });
+
+    svr.Get("/spawn_boxes", [this](const httplib::Request&, httplib::Response& res) {
+        res.set_content(spawnBoxes.dump(), "application/json");
     });
 
     svr.Get("/map_features", [this](const httplib::Request&, httplib::Response& res) {
@@ -156,6 +165,78 @@ void CControllerAI::ServerThread() {
     svr.listen(bindAddress.c_str(), port);
 }
 
+void CControllerAI::ParseSpawnBoxes() {
+    if (!callback) return;
+    const std::unique_ptr<springai::Game> game(callback->GetGame());
+    const std::unique_ptr<springai::Map> map(callback->GetMap());
+    std::string script = game->GetSetupScript();
+    
+    int width = map->GetWidth() * 8; // Heightmap pixels to elmos
+    int height = map->GetHeight() * 8;
+
+    spawnBoxes = json::object();
+    
+    // 1. Standard Spring format: [allyteam] { rect=left top right bottom; }
+    // 2. Zero-K format: startboxes=return { [0] = { 0, 0, 0.25, 1 }, ... };
+    
+    // Simplistic regex for ZK style first as it's common in Recoil
+    std::regex zkPattern("\\[(\\d+)\\]\\s*=\\s*\\{\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)\\s*\\}");
+    auto zk_it = std::sregex_iterator(script.begin(), script.end(), zkPattern);
+    auto zk_end = std::sregex_iterator();
+
+    for (std::sregex_iterator i = zk_it; i != zk_end; ++i) {
+        std::smatch match = *i;
+        int allyId = std::stoi(match[1]);
+        json box;
+        box["left"] = std::stof(match[2]) * width;
+        box["top"] = std::stof(match[3]) * height;
+        box["right"] = std::stof(match[4]) * width;
+        box["bottom"] = std::stof(match[5]) * height;
+        spawnBoxes[std::to_string(allyId)] = box;
+    }
+
+    // Fallback/Standard format search
+    if (spawnBoxes.empty()) {
+        std::regex stdPattern("allyteam(\\d+)\\s*\\{[^}]*rect\\s*=\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)");
+        auto std_it = std::sregex_iterator(script.begin(), script.end(), stdPattern);
+        for (std::sregex_iterator i = std_it; i != zk_end; ++i) {
+            std::smatch match = *i;
+            int allyId = std::stoi(match[1]);
+            json box;
+            box["left"] = std::stof(match[2]); // Standard uses absolute elmos usually
+            box["top"] = std::stof(match[3]);
+            box["right"] = std::stof(match[4]);
+            box["bottom"] = std::stof(match[5]);
+            spawnBoxes[std::to_string(allyId)] = box;
+        }
+    }
+}
+
+bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
+    if (!callback) return false;
+    const std::unique_ptr<springai::Game> game(callback->GetGame());
+    int myAlly = game->GetMyAllyTeam();
+    
+    std::string allyStr = std::to_string(myAlly);
+    if (spawnBoxes.contains(allyStr)) {
+        auto box = spawnBoxes[allyStr];
+        if (pos.x < box["left"] || pos.x > box["right"] || pos.z < box["top"] || pos.z > box["bottom"]) {
+            return false;
+        }
+    }
+
+    // Engine validation via LuaRules
+    const std::unique_ptr<springai::Lua> lua(callback->GetLua());
+    std::stringstream ss;
+    ss << "ai_is_valid_startpos:" << pos.x << "," << pos.z;
+    std::string result = lua->CallRules(ss.str().c_str(), (int)ss.str().size());
+    
+    // If gadget returns "not_valid", we fail
+    if (result == "not_valid") return false;
+
+    return true;
+}
+
 void CControllerAI::CacheMetadata() {
     if (!callback) return;
     std::vector<springai::UnitDef*> defs = callback->GetUnitDefs();
@@ -215,6 +296,9 @@ void CControllerAI::UpdateObservation() {
     json obs;
     const std::unique_ptr<springai::Game> game(callback->GetGame());
     obs["frame"] = game->GetCurrentFrame();
+    obs["aiId"] = skirmishAIId;
+    obs["teamId"] = game->GetMyTeam();
+    obs["allyTeamId"] = game->GetMyAllyTeam();
 
     // Friendly units
     obs["units"] = json::object();
@@ -359,6 +443,16 @@ void CControllerAI::ProcessCommands() {
                 int cmdId = cmd["cmdId"];
                 std::vector<float> params = cmd.value("params", std::vector<float>());
                 unit->ExecuteCustomCommand(cmdId, params, opts, 100000);
+            } else if (type == "set_start_pos") {
+                springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                if (IsSpawnPosValid(pos)) {
+                    const std::unique_ptr<springai::Game> game(callback->GetGame());
+                    game->SendStartPosition(true, pos);
+                } else {
+                    // Logic to inform user could be via text message or a status code if we wait
+                    const std::unique_ptr<springai::Game> game(callback->GetGame());
+                    game->SendTextMessage("ControllerAI: Invalid start position received!", 0);
+                }
             } else if (type == "lua") {
                 const std::unique_ptr<springai::Lua> lua(callback->GetLua());
                 std::string data = cmd["data"];

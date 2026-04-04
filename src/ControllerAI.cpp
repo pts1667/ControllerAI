@@ -86,6 +86,28 @@ void CControllerAI::ServerThread() {
         res.set_content(unitDefsCache.dump(), "application/json");
     });
 
+    svr.Get("/game_info", [this](const httplib::Request&, httplib::Response& res) {
+        if (!callback) {
+            res.status = 500;
+            return;
+        }
+        const std::unique_ptr<springai::Game> game(callback->GetGame());
+        const std::unique_ptr<springai::Mod> mod(callback->GetMod());
+        const std::unique_ptr<springai::Map> map(callback->GetMap());
+        
+        json info;
+        info["modName"] = mod->GetHumanName();
+        info["mapName"] = map->GetHumanName();
+        info["gameMode"] = game->GetMode();
+        info["isPaused"] = game->IsPaused();
+        
+        // Setup data (start post type, etc)
+        std::string script = game->GetSetupScript();
+        info["canChooseStartPos"] = (script.find("startpostype=1") != std::string::npos); // StartPos_ChooseInGame
+        
+        res.set_content(info.dump(), "application/json");
+    });
+
     svr.Get("/spawn_boxes", [this](const httplib::Request&, httplib::Response& res) {
         res.set_content(spawnBoxes.dump(), "application/json");
     });
@@ -445,14 +467,20 @@ void CControllerAI::ProcessCommands() {
                 unit->ExecuteCustomCommand(cmdId, params, opts, 100000);
             } else if (type == "set_start_pos") {
                 springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
+                bool ready = cmd.value("ready", true);
                 if (IsSpawnPosValid(pos)) {
                     const std::unique_ptr<springai::Game> game(callback->GetGame());
-                    game->SendStartPosition(true, pos);
+                    game->SendStartPosition(ready, pos);
                 } else {
                     // Logic to inform user could be via text message or a status code if we wait
                     const std::unique_ptr<springai::Game> game(callback->GetGame());
                     game->SendTextMessage("ControllerAI: Invalid start position received!", 0);
                 }
+            } else if (type == "set_commander") {
+                std::string name = cmd["name"];
+                const std::unique_ptr<springai::Lua> lua(callback->GetLua());
+                std::string msg = "ai_commander:" + name;
+                lua->CallRules(msg.c_str(), (int)msg.size());
             } else if (type == "lua") {
                 const std::unique_ptr<springai::Lua> lua(callback->GetLua());
                 std::string data = cmd["data"];

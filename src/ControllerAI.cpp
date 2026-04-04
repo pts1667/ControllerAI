@@ -15,6 +15,7 @@
 #include "Economy.h"
 #include "Cheats.h"
 #include "Lua.h"
+#include "Mod.h"
 #include "SkirmishAI.h"
 #include "OptionValues.h"
 
@@ -142,6 +143,7 @@ void CControllerAI::ServerThread() {
             fj["id"] = f->GetFeatureId();
             springai::AIFloat3 f_pos = f->GetPosition();
             fj["pos"] = json::array({f_pos.x, f_pos.y, f_pos.z});
+
             fj["health"] = f->GetHealth();
             const std::unique_ptr<springai::FeatureDef> def(f->GetDef());
             if (def) fj["name"] = def->GetName();
@@ -177,6 +179,7 @@ void CControllerAI::ServerThread() {
                 std::lock_guard<std::mutex> lock(commandQueueMutex);
                 commandQueue.push(cmd);
             }
+            cv.notify_all(); // Wake up engine thread if it's waiting
             res.set_content("{\"status\": \"queued\"}", "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
@@ -195,6 +198,9 @@ void CControllerAI::ParseSpawnBoxes() {
     
     int width = map->GetWidth() * 8; // Heightmap pixels to elmos
     int height = map->GetHeight() * 8;
+
+    canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
+    setupComplete = !canChooseStartPos;
 
     spawnBoxes = json::object();
     
@@ -247,14 +253,15 @@ bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
         }
     }
 
-    // Engine validation via LuaRules
+    // Engine validation via LuaRules. We try both / and , separators for compatibility.
     const std::unique_ptr<springai::Lua> lua(callback->GetLua());
-    std::stringstream ss;
-    ss << "ai_is_valid_startpos:" << pos.x << "," << pos.z;
-    std::string result = lua->CallRules(ss.str().c_str(), (int)ss.str().size());
-    
-    // If gadget returns "not_valid", we fail
-    if (result == "not_valid") return false;
+    std::string formats[] = { ",", "/" };
+    for (const std::string& sep : formats) {
+        std::stringstream ss;
+        ss << "ai_is_valid_startpos:" << (int)pos.x << sep << (int)pos.z;
+        std::string result = lua->CallRules(ss.str().c_str(), (int)ss.str().size());
+        if (result == "not_valid" || result == "0") return false;
+    }
 
     return true;
 }
@@ -471,6 +478,11 @@ void CControllerAI::ProcessCommands() {
                 if (IsSpawnPosValid(pos)) {
                     const std::unique_ptr<springai::Game> game(callback->GetGame());
                     game->SendStartPosition(ready, pos);
+                    if (ready) {
+                        std::lock_guard<std::mutex> lock(cvMutex);
+                        setupComplete = true;
+                        cv.notify_all();
+                    }
                 } else {
                     // Logic to inform user could be via text message or a status code if we wait
                     const std::unique_ptr<springai::Game> game(callback->GetGame());
@@ -480,6 +492,11 @@ void CControllerAI::ProcessCommands() {
                 std::string name = cmd["name"];
                 const std::unique_ptr<springai::Lua> lua(callback->GetLua());
                 std::string msg = "ai_commander:" + name;
+                lua->CallRules(msg.c_str(), (int)msg.size());
+            } else if (type == "set_side") {
+                std::string name = cmd["name"];
+                const std::unique_ptr<springai::Lua> lua(callback->GetLua());
+                std::string msg = "ai_side:" + name;
                 lua->CallRules(msg.c_str(), (int)msg.size());
             } else if (type == "lua") {
                 const std::unique_ptr<springai::Lua> lua(callback->GetLua());
@@ -499,6 +516,10 @@ json CControllerAI::EventToJson(int topic, const void* data) {
     json e;
     e["topic"] = topic;
     switch (topic) {
+        case EVENT_GAME_START: {
+            e["name"] = "GameStart";
+            break;
+        }
         case EVENT_UNIT_CREATED: {
             struct SUnitCreatedEvent* ev = (struct SUnitCreatedEvent*)data;
             e["unitId"] = ev->unit;
@@ -551,9 +572,21 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     UpdateObservation();
     ProcessCommands();
 
-    // In synchronous mode, we block the engine thread at the end of every frame
-    // until the external service tells us to continue.
-    if (synchronousMode && topic == EVENT_UPDATE) {
+    // 1. Mandatory Setup Blocking (even if sync=false)
+    // We block the engine thread at frame -1 until the AI is ready.
+    const std::unique_ptr<springai::Game> game(callback->GetGame());
+    if (game && game->GetCurrentFrame() < 0 && !setupComplete) {
+        while (!setupComplete && running) {
+            UpdateObservation(); // Refresh for the poll
+            ProcessCommands();
+            if (setupComplete) break;
+            std::unique_lock<std::mutex> lock(cvMutex);
+            cv.wait(lock); // Wake up on notify from ServerThread
+        }
+    }
+
+    // 2. Standard Synchronous Blocking (frame 0 onwards)
+    if (synchronousMode && topic == EVENT_UPDATE && game && game->GetCurrentFrame() >= 0) {
         {
             std::lock_guard<std::mutex> lock(cvMutex);
             frameFinished = false;

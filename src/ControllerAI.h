@@ -35,6 +35,8 @@ private:
     json eventBuffer; // Stores events since last observation poll
     bool running;
     bool synchronousMode;
+    bool setupComplete;
+    bool canChooseStartPos;
 
     // Synchronous Mode control
     std::condition_variable cv;

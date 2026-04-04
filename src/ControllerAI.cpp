@@ -13,6 +13,8 @@
 
 #include <iostream>
 #include <chrono>
+#include <algorithm>
+#include <cstdint>
 
 namespace controllerai {
 
@@ -64,6 +66,64 @@ void CControllerAI::ServerThread() {
         res.set_content(unitDefsCache.dump(), "application/json");
     });
 
+    svr.Get("/map_features", [this](const httplib::Request&, httplib::Response& res) {
+        if (!callback) {
+            res.status = 500;
+            return;
+        }
+        json out = json::object();
+        
+        // 1. Resource Spots
+        out["spots"] = json::array();
+        std::vector<springai::Resource*> resources = callback->GetResources();
+        const std::unique_ptr<springai::Map> map(callback->GetMap());
+        for (springai::Resource* res_ptr : resources) {
+            std::vector<springai::float3> spots = map->GetResourceMapSpotsPositions(res_ptr);
+            for (const auto& pos : spots) {
+                json s;
+                s["resource"] = res_ptr->GetName();
+                s["pos"] = {pos.x, pos.y, pos.z}; // y is value/income
+                out["spots"].push_back(s);
+            }
+            delete res_ptr;
+        }
+
+        // 2. Map Features (trees, rocks, etc)
+        out["features"] = json::array();
+        std::vector<springai::Feature*> features = callback->GetFeatures();
+        for (springai::Feature* f : features) {
+            json fj;
+            fj["id"] = f->GetFeatureId();
+            springai::float3 pos = f->GetPos();
+            fj["pos"] = {pos.x, pos.y, pos.z};
+            fj["health"] = f->GetHealth();
+            const std::unique_ptr<springai::FeatureDef> def(f->GetDef());
+            if (def) fj["name"] = def->GetName();
+            out["features"].push_back(fj);
+            delete f;
+        }
+        
+        res.set_content(out.dump(), "application/json");
+    });
+
+    svr.Get("/heightmap", [this](const httplib::Request&, httplib::Response& res) {
+        if (!callback) {
+            res.status = 500;
+            return;
+        }
+        const std::unique_ptr<springai::Map> map(callback->GetMap());
+        int width = map->GetWidth();
+        int height = map->GetHeight();
+        std::vector<float> heights = map->GetHeightMap();
+        
+        json out;
+        out["width"] = width;
+        out["height"] = height;
+        out["data_b64"] = Base64Encode(reinterpret_cast<const unsigned char*>(heights.data()), heights.size() * sizeof(float));
+        
+        res.set_content(out.dump(), "application/json");
+    });
+
     svr.Post("/command", [this](const httplib::Request& req, httplib::Response& res) {
         try {
             json cmd = json::parse(req.body);
@@ -98,6 +158,40 @@ void CControllerAI::CacheMetadata() {
         delete def;
     }
     unitDefsCache = jDefs;
+}
+
+std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
+    static const char* base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string ret;
+    int i = 0;
+    int j = 0;
+    unsigned char char_array_3[3];
+    unsigned char char_array_4[4];
+
+    while (len--) {
+        char_array_3[i++] = *(data++);
+        if (i == 3) {
+            char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+            char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+            char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+            char_array_4[3] = char_array_3[2] & 0x3f;
+
+            for (i = 0; i < 4; i++) ret += base64_chars[char_array_4[i]];
+            i = 0;
+        }
+    }
+
+    if (i) {
+        for (j = i; j < 3; j++) char_array_3[j] = '\0';
+        char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+        char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+        char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+        char_array_4[3] = char_array_3[2] & 0x3f;
+
+        for (j = 0; j < i + 1; j++) ret += base64_chars[char_array_4[j]];
+        while ((i++ < 3)) ret += '=';
+    }
+    return ret;
 }
 
 void CControllerAI::UpdateObservation() {

@@ -54,7 +54,27 @@ Returns the current snapshot of the game state.
 ### 2. `GET /metadata`
 Returns static data about all unit types available in the current game/mod. Useful for mapping `defId` to human-readable names and stats.
 
-### 3. `POST /command`
+### 3. `GET /map_features`
+Returns positions of resource spots (metal/energy) and map features (trees, rocks, wrecks).
+- **spots**: Array of `{ "resource": "metal", "pos": [x, y, z] }`.
+- **features**: Array of `{ "id": 1, "name": "tree1", "pos": [x, y, z], "health": 100 }`.
+
+### 4. `GET /heightmap`
+Returns the current dynamic heightmap of the map.
+- **width**, **height**: Dimensions of the heightmap.
+- **data_b64**: Base64 encoded string of raw `float32` values. 
+
+**Python Decoding Example:**
+```python
+import base64
+import numpy as np
+
+res = requests.get(f"{URL}/heightmap").json()
+raw_data = base64.b64decode(res['data_b64'])
+heights = np.frombuffer(raw_data, dtype=np.float32).reshape((res['height'], res['width']))
+```
+
+### 5. `POST /command`
 Sends a command to the game engine.
 
 **Move Command:**

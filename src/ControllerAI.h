@@ -56,6 +56,8 @@ private:
     json unitDefsCache;
     void CacheMetadata();
 
+    std::string Base64Encode(const unsigned char* data, size_t len);
+
 public:
     CControllerAI(springai::OOAICallback* callback);
     ~CControllerAI();

@@ -8,7 +8,7 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 2.  **Observation**: Every game frame (and during the pre-match phase), the AI updates its internal state. External services poll this state via `/observation`.
 3.  **Game Info**: External services can query `/game_info` during startup to discover map metadata, game mode, pause state, and whether the AI is still allowed to choose its start position.
 4.  **Commands**: External services POST JSON commands to `/command`. These are executed on the next engine update.
-5.  **Synchronous Control**: By default, the engine pauses at the end of every frame until you send a `finish_frame` command.
+5. **Synchronous Control**: By default, the engine blocks the main thread during the setup phase (frame -1) until a start position is chosen. Once the game starts, it pauses at the end of every frame until you send a `finish_frame` command.
 
 ## Configuration
 
@@ -16,7 +16,8 @@ You can configure the binding address and port through the engine's AI options (
 
 - **Binding Address (`ip`)**: The IP the server binds to. Default: `127.0.0.1`.
 - **Server Port (`port`)**: The port the server listens on. Default: `3017`.
-- **Synchronous Mode (`sync`)**: If `true`, the engine thread blocks at the end of every update until a `finish_frame` command is received. **Default: `true`**.
+- **Synchronous Mode (`sync`)**: If `true`, the engine thread blocks at the end of every update until a `finish_frame` command is received. **Default: `true`**. Note that setup-phase blocking (frame -1) is mandatory regardless of this setting if the map requires choosing a start position.
+
 
 ## API Endpoints
 
@@ -67,8 +68,8 @@ Typical startup flow:
 1. Poll `/observation` until the AI is initialized.
 2. Read `/game_info` to check whether startup setup is still available.
 3. If the game allows it, send `set_commander` before choosing a start position.
-4. If `canChooseStartPos` is true, read `/spawn_boxes` and send `set_start_pos`.
-5. Call `finish_frame` to let the match proceed.
+4. If `canChooseStartPos` is true, read `/spawn_boxes` and send `set_start_pos`. **This unblocks the engine setup phase.**
+5. Once the match reaches frame 0, the engine will block again (if `sync=true`). Call `finish_frame` to proceed with the game loop.
 
 **Example Response:**
 ```json

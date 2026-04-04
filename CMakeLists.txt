@@ -23,6 +23,10 @@ set(additionalSources      "")
 set(additionalCompileFlags "")
 set(additionalLibraries    ${Cpp_AIWRAPPER_TARGET} CUtils nlohmann_json::nlohmann_json)
 
+if(WIN32)
+	list(APPEND additionalLibraries ws2_32)
+endif()
+
 if    (BUILD_Cpp_AIWRAPPER)
 	include_directories(BEFORE ${Cpp_AIWRAPPER_INCLUDE_DIRS})
 	

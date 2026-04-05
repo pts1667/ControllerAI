@@ -58,12 +58,33 @@ private:
     // Internal processing
     void UpdateObservation();
     void ProcessCommands();
+    void ProcessQueries();
     void WaitForResume();
     void Release(int reason);
+    json HandleQuery(const json& query);
     
     void CacheStaticData();
     std::tuple<int, json> ParseUnit(springai::Unit* unit);
     std::tuple<int, json> ParseRadarBlip(springai::Unit* unit);
+    json SerializeUnitDetails(springai::Unit* unit);
+    json SerializeFeature(springai::Feature* feature);
+    json SerializeFeatureDef(springai::FeatureDef* featureDef);
+    json SerializeUnitDef(springai::UnitDef* unitDef);
+    json SerializeResource(springai::Resource* resource);
+    json SerializeWeaponDefRef(springai::WeaponDef* weaponDef);
+    json SerializeWeaponMount(springai::WeaponMount* weaponMount);
+    json SerializeMoveData(springai::MoveData* moveData);
+    json SerializeFlankingBonus(springai::FlankingBonus* flankingBonus);
+
+    springai::UnitDef* FindUnitDefById(int unitDefId);
+    springai::FeatureDef* FindFeatureDefById(int featureDefId);
+    springai::FeatureDef* FindFeatureDefByName(const std::string& name);
+
+    int ReadIntValue(const json& query, const char* key) const;
+    float ReadFloatValue(const json& query, const char* key) const;
+    bool ReadBoolValue(const json& query, const char* key, bool defaultValue) const;
+    std::string ReadStringValue(const json& query, const char* key) const;
+    springai::AIFloat3 ReadPositionValue(const json& query) const;
 
     bool IsSpawnPosValid(const springai::AIFloat3& pos);
 

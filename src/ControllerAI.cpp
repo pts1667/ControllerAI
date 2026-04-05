@@ -9,6 +9,10 @@
 #include "WrappUnit.h"
 #include "UnitDef.h"
 #include "WrappUnitDef.h"
+#include "WeaponDef.h"
+#include "WeaponMount.h"
+#include "MoveData.h"
+#include "FlankingBonus.h"
 #include "Feature.h"
 #include "WrappFeature.h"
 #include "FeatureDef.h"
@@ -25,6 +29,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 #include <regex>
 #include <sstream>
 #include <unordered_set>
@@ -232,6 +237,570 @@ std::string CControllerAI::SafeCString(const char* value) const {
     return value != nullptr ? std::string(value) : std::string();
 }
 
+int CControllerAI::ReadIntValue(const json& query, const char* key) const {
+    if (!query.contains(key)) {
+        throw std::runtime_error(std::string("Missing query parameter: ") + key);
+    }
+
+    const json& value = query.at(key);
+    if (value.is_number_integer()) {
+        return value.get<int>();
+    }
+    if (value.is_number_unsigned()) {
+        return static_cast<int>(value.get<unsigned int>());
+    }
+    if (value.is_string()) {
+        return std::stoi(value.get<std::string>());
+    }
+
+    throw std::runtime_error(std::string("Query parameter '") + key + "' must be an integer.");
+}
+
+float CControllerAI::ReadFloatValue(const json& query, const char* key) const {
+    if (!query.contains(key)) {
+        throw std::runtime_error(std::string("Missing query parameter: ") + key);
+    }
+
+    const json& value = query.at(key);
+    if (value.is_number()) {
+        return value.get<float>();
+    }
+    if (value.is_string()) {
+        return std::stof(value.get<std::string>());
+    }
+
+    throw std::runtime_error(std::string("Query parameter '") + key + "' must be a number.");
+}
+
+bool CControllerAI::ReadBoolValue(const json& query, const char* key, bool defaultValue) const {
+    if (!query.contains(key)) {
+        return defaultValue;
+    }
+
+    const json& value = query.at(key);
+    if (value.is_boolean()) {
+        return value.get<bool>();
+    }
+    if (value.is_number_integer()) {
+        return value.get<int>() != 0;
+    }
+    if (value.is_string()) {
+        const std::string raw = value.get<std::string>();
+        if (raw == "1" || raw == "true" || raw == "TRUE" || raw == "True") {
+            return true;
+        }
+        if (raw == "0" || raw == "false" || raw == "FALSE" || raw == "False") {
+            return false;
+        }
+    }
+
+    throw std::runtime_error(std::string("Query parameter '") + key + "' must be a boolean.");
+}
+
+std::string CControllerAI::ReadStringValue(const json& query, const char* key) const {
+    if (!query.contains(key)) {
+        throw std::runtime_error(std::string("Missing query parameter: ") + key);
+    }
+
+    const json& value = query.at(key);
+    if (!value.is_string()) {
+        throw std::runtime_error(std::string("Query parameter '") + key + "' must be a string.");
+    }
+
+    return value.get<std::string>();
+}
+
+springai::AIFloat3 CControllerAI::ReadPositionValue(const json& query) const {
+    springai::AIFloat3 pos = {0.0f, 0.0f, 0.0f};
+
+    if (query.contains("pos")) {
+        const json& rawPos = query.at("pos");
+        if (!rawPos.is_array() || rawPos.size() < 3) {
+            throw std::runtime_error("Query parameter 'pos' must be an array of three numbers.");
+        }
+
+        pos.x = rawPos[0].get<float>();
+        pos.y = rawPos[1].get<float>();
+        pos.z = rawPos[2].get<float>();
+        return pos;
+    }
+
+    pos.x = ReadFloatValue(query, "x");
+    pos.y = query.contains("y") ? ReadFloatValue(query, "y") : 0.0f;
+    pos.z = ReadFloatValue(query, "z");
+    return pos;
+}
+
+springai::UnitDef* CControllerAI::FindUnitDefById(int unitDefId) {
+    if (skirmishAIId == -1 || unitDefId < 0) {
+        return nullptr;
+    }
+
+    return springai::WrappUnitDef::GetInstance(skirmishAIId, unitDefId);
+}
+
+springai::FeatureDef* CControllerAI::FindFeatureDefById(int featureDefId) {
+    if (!callback) {
+        return nullptr;
+    }
+
+    std::vector<springai::FeatureDef*> defs = callback->GetFeatureDefs();
+    for (springai::FeatureDef* def : defs) {
+        if (def && def->GetFeatureDefId() == featureDefId) {
+            return def;
+        }
+    }
+
+    return nullptr;
+}
+
+springai::FeatureDef* CControllerAI::FindFeatureDefByName(const std::string& name) {
+    if (!callback) {
+        return nullptr;
+    }
+
+    std::vector<springai::FeatureDef*> defs = callback->GetFeatureDefs();
+    for (springai::FeatureDef* def : defs) {
+        if (def && SafeCString(def->GetName()) == name) {
+            return def;
+        }
+    }
+
+    return nullptr;
+}
+
+json CControllerAI::SerializeResource(springai::Resource* resource) {
+    if (!resource) {
+        return json();
+    }
+
+    return json({
+        {"id", resource->GetResourceId()},
+        {"name", SafeCString(resource->GetName())},
+        {"optimum", resource->GetOptimum()}
+    });
+}
+
+json CControllerAI::SerializeWeaponDefRef(springai::WeaponDef* weaponDef) {
+    if (!weaponDef) {
+        return json();
+    }
+
+    return json({
+        {"id", weaponDef->GetWeaponDefId()},
+        {"name", SafeCString(weaponDef->GetName())},
+        {"type", SafeCString(weaponDef->GetType())}
+    });
+}
+
+json CControllerAI::SerializeWeaponMount(springai::WeaponMount* weaponMount) {
+    if (!weaponMount) {
+        return json();
+    }
+
+    const springai::AIFloat3 mainDir = weaponMount->GetMainDir();
+    return json({
+        {"id", weaponMount->GetWeaponMountId()},
+        {"name", SafeCString(weaponMount->GetName())},
+        {"weaponDef", SerializeWeaponDefRef(weaponMount->GetWeaponDef())},
+        {"slavedTo", weaponMount->GetSlavedTo()},
+        {"mainDir", json::array({mainDir.x, mainDir.y, mainDir.z})},
+        {"maxAngleDif", weaponMount->GetMaxAngleDif()},
+        {"badTargetCategory", weaponMount->GetBadTargetCategory()},
+        {"onlyTargetCategory", weaponMount->GetOnlyTargetCategory()}
+    });
+}
+
+json CControllerAI::SerializeMoveData(springai::MoveData* moveData) {
+    if (!moveData) {
+        return json();
+    }
+
+    return json({
+        {"unitDefId", moveData->GetUnitDefId()},
+        {"name", SafeCString(moveData->GetName())},
+        {"xSize", moveData->GetXSize()},
+        {"zSize", moveData->GetZSize()},
+        {"depth", moveData->GetDepth()},
+        {"maxSlope", moveData->GetMaxSlope()},
+        {"slopeMod", moveData->GetSlopeMod()},
+        {"pathType", moveData->GetPathType()},
+        {"crushStrength", moveData->GetCrushStrength()},
+        {"speedModClass", moveData->GetSpeedModClass()},
+        {"terrainClass", moveData->GetTerrainClass()},
+        {"followGround", moveData->GetFollowGround()},
+        {"isSubMarine", moveData->IsSubMarine()}
+    });
+}
+
+json CControllerAI::SerializeFlankingBonus(springai::FlankingBonus* flankingBonus) {
+    if (!flankingBonus) {
+        return json();
+    }
+
+    const springai::AIFloat3 dir = flankingBonus->GetDir();
+    return json({
+        {"unitDefId", flankingBonus->GetUnitDefId()},
+        {"mode", flankingBonus->GetMode()},
+        {"dir", json::array({dir.x, dir.y, dir.z})},
+        {"max", flankingBonus->GetMax()},
+        {"min", flankingBonus->GetMin()},
+        {"mobilityAdd", flankingBonus->GetMobilityAdd()}
+    });
+}
+
+json CControllerAI::SerializeUnitDef(springai::UnitDef* unitDef) {
+    if (!unitDef) {
+        return json();
+    }
+
+    json resources = json::object();
+    if (callback) {
+        std::vector<springai::Resource*> allResources = callback->GetResources();
+        for (springai::Resource* resource : allResources) {
+            if (!resource) {
+                continue;
+            }
+
+            const std::string resourceName = SafeCString(resource->GetName());
+            resources[resourceName] = {
+                {"id", resource->GetResourceId()},
+                {"optimum", resource->GetOptimum()},
+                {"upkeep", unitDef->GetUpkeep(resource)},
+                {"resourceMake", unitDef->GetResourceMake(resource)},
+                {"makesResource", unitDef->GetMakesResource(resource)},
+                {"cost", unitDef->GetCost(resource)},
+                {"extractsResource", unitDef->GetExtractsResource(resource)},
+                {"resourceExtractorRange", unitDef->GetResourceExtractorRange(resource)},
+                {"windResourceGenerator", unitDef->GetWindResourceGenerator(resource)},
+                {"tidalResourceGenerator", unitDef->GetTidalResourceGenerator(resource)},
+                {"storage", unitDef->GetStorage(resource)}
+            };
+        }
+    }
+
+    json yardMaps = json::object();
+    for (int facing = 0; facing < 4; ++facing) {
+        std::vector<short> yardMap = unitDef->GetYardMap(facing);
+        if (!yardMap.empty()) {
+            yardMaps[std::to_string(facing)] = yardMap;
+        }
+    }
+
+    json buildOptions = json::array();
+    std::vector<springai::UnitDef*> buildable = unitDef->GetBuildOptions();
+    for (springai::UnitDef* option : buildable) {
+        if (!option) {
+            continue;
+        }
+
+        buildOptions.push_back({
+            {"id", option->GetUnitDefId()},
+            {"name", SafeCString(option->GetName())},
+            {"humanName", SafeCString(option->GetHumanName())}
+        });
+    }
+
+    json weaponMounts = json::array();
+    std::vector<springai::WeaponMount*> mounts = unitDef->GetWeaponMounts();
+    for (springai::WeaponMount* mount : mounts) {
+        weaponMounts.push_back(SerializeWeaponMount(mount));
+    }
+
+    const springai::AIFloat3 flareDropVector = unitDef->GetFlareDropVector();
+
+    json serialized = {
+        {"id", unitDef->GetUnitDefId()},
+        {"name", SafeCString(unitDef->GetName())},
+        {"humanName", SafeCString(unitDef->GetHumanName())},
+        {"height", unitDef->GetHeight()},
+        {"radius", unitDef->GetRadius()},
+        {"resources", resources},
+        {"buildTime", unitDef->GetBuildTime()},
+        {"autoHeal", unitDef->GetAutoHeal()},
+        {"idleAutoHeal", unitDef->GetIdleAutoHeal()},
+        {"idleTime", unitDef->GetIdleTime()},
+        {"power", unitDef->GetPower()},
+        {"health", unitDef->GetHealth()},
+        {"category", unitDef->GetCategory()},
+        {"categoryString", SafeCString(unitDef->GetCategoryString())},
+        {"speed", unitDef->GetSpeed()},
+        {"turnRate", unitDef->GetTurnRate()},
+        {"isTurnInPlace", unitDef->IsTurnInPlace()},
+        {"turnInPlaceDistance", unitDef->GetTurnInPlaceDistance()},
+        {"turnInPlaceSpeedLimit", unitDef->GetTurnInPlaceSpeedLimit()},
+        {"isUpright", unitDef->IsUpright()},
+        {"isCollide", unitDef->IsCollide()},
+        {"losRadius", unitDef->GetLosRadius()},
+        {"airLosRadius", unitDef->GetAirLosRadius()},
+        {"losHeight", unitDef->GetLosHeight()},
+        {"radarRadius", unitDef->GetRadarRadius()},
+        {"sonarRadius", unitDef->GetSonarRadius()},
+        {"jammerRadius", unitDef->GetJammerRadius()},
+        {"sonarJamRadius", unitDef->GetSonarJamRadius()},
+        {"seismicRadius", unitDef->GetSeismicRadius()},
+        {"seismicSignature", unitDef->GetSeismicSignature()},
+        {"isStealth", unitDef->IsStealth()},
+        {"isSonarStealth", unitDef->IsSonarStealth()},
+        {"isBuildRange3D", unitDef->IsBuildRange3D()},
+        {"buildDistance", unitDef->GetBuildDistance()},
+        {"buildSpeed", unitDef->GetBuildSpeed()},
+        {"reclaimSpeed", unitDef->GetReclaimSpeed()},
+        {"repairSpeed", unitDef->GetRepairSpeed()},
+        {"maxRepairSpeed", unitDef->GetMaxRepairSpeed()},
+        {"resurrectSpeed", unitDef->GetResurrectSpeed()},
+        {"captureSpeed", unitDef->GetCaptureSpeed()},
+        {"terraformSpeed", unitDef->GetTerraformSpeed()},
+        {"upDirSmoothing", unitDef->GetUpDirSmoothing()},
+        {"mass", unitDef->GetMass()},
+        {"isPushResistant", unitDef->IsPushResistant()},
+        {"isStrafeToAttack", unitDef->IsStrafeToAttack()},
+        {"minCollisionSpeed", unitDef->GetMinCollisionSpeed()},
+        {"slideTolerance", unitDef->GetSlideTolerance()},
+        {"maxHeightDif", unitDef->GetMaxHeightDif()},
+        {"minWaterDepth", unitDef->GetMinWaterDepth()},
+        {"waterline", unitDef->GetWaterline()},
+        {"maxWaterDepth", unitDef->GetMaxWaterDepth()},
+        {"armoredMultiple", unitDef->GetArmoredMultiple()},
+        {"armorType", unitDef->GetArmorType()},
+        {"maxWeaponRange", unitDef->GetMaxWeaponRange()},
+        {"tooltip", SafeCString(unitDef->GetTooltip())},
+        {"wreckName", SafeCString(unitDef->GetWreckName())},
+        {"deathExplosion", SerializeWeaponDefRef(unitDef->GetDeathExplosion())},
+        {"selfDExplosion", SerializeWeaponDefRef(unitDef->GetSelfDExplosion())},
+        {"isAbleToSelfD", unitDef->IsAbleToSelfD()},
+        {"selfDCountdown", unitDef->GetSelfDCountdown()},
+        {"isAbleToSubmerge", unitDef->IsAbleToSubmerge()},
+        {"isAbleToFly", unitDef->IsAbleToFly()},
+        {"isAbleToMove", unitDef->IsAbleToMove()},
+        {"isAbleToHover", unitDef->IsAbleToHover()},
+        {"isFloater", unitDef->IsFloater()},
+        {"isBuilder", unitDef->IsBuilder()},
+        {"isActivateWhenBuilt", unitDef->IsActivateWhenBuilt()},
+        {"isOnOffable", unitDef->IsOnOffable()},
+        {"isFullHealthFactory", unitDef->IsFullHealthFactory()},
+        {"isFactoryHeadingTakeoff", unitDef->IsFactoryHeadingTakeoff()},
+        {"isReclaimable", unitDef->IsReclaimable()},
+        {"isCapturable", unitDef->IsCapturable()},
+        {"isAbleToRestore", unitDef->IsAbleToRestore()},
+        {"isAbleToRepair", unitDef->IsAbleToRepair()},
+        {"isAbleToSelfRepair", unitDef->IsAbleToSelfRepair()},
+        {"isAbleToReclaim", unitDef->IsAbleToReclaim()},
+        {"isAbleToAttack", unitDef->IsAbleToAttack()},
+        {"isAbleToPatrol", unitDef->IsAbleToPatrol()},
+        {"isAbleToFight", unitDef->IsAbleToFight()},
+        {"isAbleToGuard", unitDef->IsAbleToGuard()},
+        {"isAbleToAssist", unitDef->IsAbleToAssist()},
+        {"isAssistable", unitDef->IsAssistable()},
+        {"isAbleToRepeat", unitDef->IsAbleToRepeat()},
+        {"isAbleToFireControl", unitDef->IsAbleToFireControl()},
+        {"fireState", unitDef->GetFireState()},
+        {"moveState", unitDef->GetMoveState()},
+        {"wingDrag", unitDef->GetWingDrag()},
+        {"wingAngle", unitDef->GetWingAngle()},
+        {"frontToSpeed", unitDef->GetFrontToSpeed()},
+        {"speedToFront", unitDef->GetSpeedToFront()},
+        {"myGravity", unitDef->GetMyGravity()},
+        {"maxBank", unitDef->GetMaxBank()},
+        {"maxPitch", unitDef->GetMaxPitch()},
+        {"turnRadius", unitDef->GetTurnRadius()},
+        {"wantedHeight", unitDef->GetWantedHeight()},
+        {"verticalSpeed", unitDef->GetVerticalSpeed()},
+        {"isHoverAttack", unitDef->IsHoverAttack()},
+        {"isAirStrafe", unitDef->IsAirStrafe()},
+        {"dlHoverFactor", unitDef->GetDlHoverFactor()},
+        {"maxAcceleration", unitDef->GetMaxAcceleration()},
+        {"maxDeceleration", unitDef->GetMaxDeceleration()},
+        {"maxAileron", unitDef->GetMaxAileron()},
+        {"maxElevator", unitDef->GetMaxElevator()},
+        {"maxRudder", unitDef->GetMaxRudder()},
+        {"yardMaps", yardMaps},
+        {"xSize", unitDef->GetXSize()},
+        {"zSize", unitDef->GetZSize()},
+        {"loadingRadius", unitDef->GetLoadingRadius()},
+        {"unloadSpread", unitDef->GetUnloadSpread()},
+        {"transportCapacity", unitDef->GetTransportCapacity()},
+        {"transportSize", unitDef->GetTransportSize()},
+        {"minTransportSize", unitDef->GetMinTransportSize()},
+        {"isAirBase", unitDef->IsAirBase()},
+        {"isFirePlatform", unitDef->IsFirePlatform()},
+        {"transportMass", unitDef->GetTransportMass()},
+        {"minTransportMass", unitDef->GetMinTransportMass()},
+        {"isHoldSteady", unitDef->IsHoldSteady()},
+        {"isReleaseHeld", unitDef->IsReleaseHeld()},
+        {"isNotTransportable", unitDef->IsNotTransportable()},
+        {"isTransportByEnemy", unitDef->IsTransportByEnemy()},
+        {"transportUnloadMethod", unitDef->GetTransportUnloadMethod()},
+        {"fallSpeed", unitDef->GetFallSpeed()},
+        {"unitFallSpeed", unitDef->GetUnitFallSpeed()},
+        {"isAbleToCloak", unitDef->IsAbleToCloak()},
+        {"isStartCloaked", unitDef->IsStartCloaked()},
+        {"cloakCost", unitDef->GetCloakCost()},
+        {"cloakCostMoving", unitDef->GetCloakCostMoving()},
+        {"decloakDistance", unitDef->GetDecloakDistance()},
+        {"isDecloakSpherical", unitDef->IsDecloakSpherical()},
+        {"isDecloakOnFire", unitDef->IsDecloakOnFire()},
+        {"isAbleToKamikaze", unitDef->IsAbleToKamikaze()},
+        {"kamikazeDist", unitDef->GetKamikazeDist()},
+        {"isTargetingFacility", unitDef->IsTargetingFacility()},
+        {"canManualFire", unitDef->CanManualFire()},
+        {"isNeedGeo", unitDef->IsNeedGeo()},
+        {"isFeature", unitDef->IsFeature()},
+        {"isHideDamage", unitDef->IsHideDamage()},
+        {"isShowPlayerName", unitDef->IsShowPlayerName()},
+        {"isAbleToResurrect", unitDef->IsAbleToResurrect()},
+        {"isAbleToCapture", unitDef->IsAbleToCapture()},
+        {"highTrajectoryType", unitDef->GetHighTrajectoryType()},
+        {"noChaseCategory", unitDef->GetNoChaseCategory()},
+        {"isAbleToDropFlare", unitDef->IsAbleToDropFlare()},
+        {"flareReloadTime", unitDef->GetFlareReloadTime()},
+        {"flareEfficiency", unitDef->GetFlareEfficiency()},
+        {"flareDelay", unitDef->GetFlareDelay()},
+        {"flareDropVector", json::array({flareDropVector.x, flareDropVector.y, flareDropVector.z})},
+        {"flareTime", unitDef->GetFlareTime()},
+        {"flareSalvoSize", unitDef->GetFlareSalvoSize()},
+        {"flareSalvoDelay", unitDef->GetFlareSalvoDelay()},
+        {"isAbleToLoopbackAttack", unitDef->IsAbleToLoopbackAttack()},
+        {"isLevelGround", unitDef->IsLevelGround()},
+        {"maxThisUnit", unitDef->GetMaxThisUnit()},
+        {"decoyDef", unitDef->GetDecoyDef() ? json({{"id", unitDef->GetDecoyDef()->GetUnitDefId()}, {"name", SafeCString(unitDef->GetDecoyDef()->GetName())}}) : json()},
+        {"isDontLand", unitDef->IsDontLand()},
+        {"shieldDef", SerializeWeaponDefRef(unitDef->GetShieldDef())},
+        {"stockpileDef", SerializeWeaponDefRef(unitDef->GetStockpileDef())},
+        {"buildOptions", buildOptions},
+        {"customParams", unitDef->GetCustomParams()},
+        {"weaponMounts", weaponMounts},
+        {"moveData", SerializeMoveData(unitDef->GetMoveData())},
+        {"flankingBonus", SerializeFlankingBonus(unitDef->GetFlankingBonus())}
+    };
+
+    return serialized;
+}
+
+json CControllerAI::SerializeFeatureDef(springai::FeatureDef* featureDef) {
+    if (!featureDef) {
+        return json();
+    }
+
+    json containedResources = json::object();
+    if (callback) {
+        std::vector<springai::Resource*> allResources = callback->GetResources();
+        for (springai::Resource* resource : allResources) {
+            if (!resource) {
+                continue;
+            }
+
+            containedResources[SafeCString(resource->GetName())] = featureDef->GetContainedResource(resource);
+        }
+    }
+
+    return json({
+        {"id", featureDef->GetFeatureDefId()},
+        {"name", SafeCString(featureDef->GetName())},
+        {"description", SafeCString(featureDef->GetDescription())},
+        {"containedResources", containedResources},
+        {"maxHealth", featureDef->GetMaxHealth()},
+        {"reclaimTime", featureDef->GetReclaimTime()},
+        {"mass", featureDef->GetMass()},
+        {"isUpright", featureDef->IsUpright()},
+        {"drawType", featureDef->GetDrawType()},
+        {"modelName", SafeCString(featureDef->GetModelName())},
+        {"resurrectable", featureDef->GetResurrectable()},
+        {"smokeTime", featureDef->GetSmokeTime()},
+        {"isDestructable", featureDef->IsDestructable()},
+        {"isReclaimable", featureDef->IsReclaimable()},
+        {"isAutoreclaimable", featureDef->IsAutoreclaimable()},
+        {"isBlocking", featureDef->IsBlocking()},
+        {"isBurnable", featureDef->IsBurnable()},
+        {"isFloating", featureDef->IsFloating()},
+        {"isNoSelect", featureDef->IsNoSelect()},
+        {"isGeoThermal", featureDef->IsGeoThermal()},
+        {"xSize", featureDef->GetXSize()},
+        {"zSize", featureDef->GetZSize()},
+        {"customParams", featureDef->GetCustomParams()}
+    });
+}
+
+json CControllerAI::SerializeFeature(springai::Feature* feature) {
+    if (!feature) {
+        return json();
+    }
+
+    springai::AIFloat3 pos = feature->GetPosition();
+    springai::FeatureDef* def = feature->GetDef();
+    springai::UnitDef* resurrectDef = feature->GetResurrectDef();
+
+    json result = {
+        {"id", feature->GetFeatureId()},
+        {"pos", json::array({pos.x, pos.y, pos.z})},
+        {"health", feature->GetHealth()},
+        {"reclaimLeft", feature->GetReclaimLeft()},
+        {"buildingFacing", feature->GetBuildingFacing()}
+    };
+
+    if (def) {
+        result["defId"] = def->GetFeatureDefId();
+        result["name"] = SafeCString(def->GetName());
+        result["definition"] = SerializeFeatureDef(def);
+    }
+
+    if (resurrectDef) {
+        result["resurrectDef"] = {
+            {"id", resurrectDef->GetUnitDefId()},
+            {"name", SafeCString(resurrectDef->GetName())}
+        };
+    }
+
+    return result;
+}
+
+json CControllerAI::SerializeUnitDetails(springai::Unit* unit) {
+    if (!unit) {
+        return json();
+    }
+
+    auto [unitId, base] = ParseUnit(unit);
+    if (unitId == -1) {
+        return json();
+    }
+
+    json resources = json::object();
+    if (callback) {
+        std::vector<springai::Resource*> allResources = callback->GetResources();
+        for (springai::Resource* resource : allResources) {
+            if (!resource) {
+                continue;
+            }
+
+            resources[SafeCString(resource->GetName())] = {
+                {"use", unit->GetResourceUse(resource)},
+                {"make", unit->GetResourceMake(resource)}
+            };
+        }
+    }
+
+    base["id"] = unitId;
+    base["teamId"] = unit->GetTeam();
+    base["limit"] = unit->GetLimit();
+    base["maxUnits"] = unit->GetMax();
+    base["stockpile"] = unit->GetStockpile();
+    base["stockpileQueued"] = unit->GetStockpileQueued();
+    base["maxSpeed"] = unit->GetMaxSpeed();
+    base["maxRange"] = unit->GetMaxRange();
+    base["group"] = unit->GetGroup();
+    base["paralyzeDamage"] = unit->GetParalyzeDamage();
+    base["captureProgress"] = unit->GetCaptureProgress();
+    base["speed"] = unit->GetSpeed();
+    base["power"] = unit->GetPower();
+    base["resources"] = resources;
+    base["isActivated"] = unit->IsActivated();
+    base["isNeutral"] = unit->IsNeutral();
+    base["buildingFacing"] = unit->GetBuildingFacing();
+    base["lastUserOrderFrame"] = unit->GetLastUserOrderFrame();
+    base["definition"] = SerializeUnitDef(unit->GetDef());
+    return base;
+}
+
 bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
     if (!game || !lua || !server) return false;
     int myAlly = game->GetMyAllyTeam();
@@ -423,6 +992,241 @@ void CControllerAI::UpdateObservation() {
     server->PublishObservation(std::move(obs));
 }
 
+json CControllerAI::HandleQuery(const json& query) {
+    if (!callback) {
+        throw std::runtime_error("AI callback is not available.");
+    }
+
+    const std::string type = ReadStringValue(query, "type");
+
+    if (type == "unit_def_id_by_name") {
+        springai::UnitDef* unitDef = callback->GetUnitDefByName(ReadStringValue(query, "name").c_str());
+        if (!unitDef) {
+            throw std::runtime_error("Unknown UnitDef name.");
+        }
+        return unitDef->GetUnitDefId();
+    }
+
+    if (type == "unit_def_by_id") {
+        springai::UnitDef* unitDef = FindUnitDefById(ReadIntValue(query, "unitDefId"));
+        if (!unitDef) {
+            throw std::runtime_error("Unknown UnitDef ID.");
+        }
+        return SerializeUnitDef(unitDef);
+    }
+
+    if (type == "unit_def_by_name") {
+        springai::UnitDef* unitDef = callback->GetUnitDefByName(ReadStringValue(query, "name").c_str());
+        if (!unitDef) {
+            throw std::runtime_error("Unknown UnitDef name.");
+        }
+        return SerializeUnitDef(unitDef);
+    }
+
+    if (type == "unit_def_id_by_unit_id") {
+        springai::Unit* unit = springai::WrappUnit::GetInstance(skirmishAIId, ReadIntValue(query, "unitId"));
+        if (!unit) {
+            throw std::runtime_error("Unknown Unit ID.");
+        }
+
+        springai::UnitDef* unitDef = unit->GetDef();
+        if (!unitDef) {
+            throw std::runtime_error("Unit has no UnitDef.");
+        }
+        return unitDef->GetUnitDefId();
+    }
+
+    if (type == "unit_def_by_unit_id") {
+        springai::Unit* unit = springai::WrappUnit::GetInstance(skirmishAIId, ReadIntValue(query, "unitId"));
+        if (!unit) {
+            throw std::runtime_error("Unknown Unit ID.");
+        }
+
+        springai::UnitDef* unitDef = unit->GetDef();
+        if (!unitDef) {
+            throw std::runtime_error("Unit has no UnitDef.");
+        }
+        return SerializeUnitDef(unitDef);
+    }
+
+    if (type == "unit_by_id") {
+        springai::Unit* unit = springai::WrappUnit::GetInstance(skirmishAIId, ReadIntValue(query, "unitId"));
+        if (!unit) {
+            throw std::runtime_error("Unknown Unit ID.");
+        }
+        return SerializeUnitDetails(unit);
+    }
+
+    if (type == "feature_by_id") {
+        springai::Feature* feature = springai::WrappFeature::GetInstance(skirmishAIId, ReadIntValue(query, "featureId"));
+        if (!feature) {
+            throw std::runtime_error("Unknown Feature ID.");
+        }
+        return SerializeFeature(feature);
+    }
+
+    if (type == "feature_def_by_id") {
+        springai::FeatureDef* featureDef = FindFeatureDefById(ReadIntValue(query, "featureDefId"));
+        if (!featureDef) {
+            throw std::runtime_error("Unknown FeatureDef ID.");
+        }
+        return SerializeFeatureDef(featureDef);
+    }
+
+    if (type == "feature_def_by_name") {
+        springai::FeatureDef* featureDef = FindFeatureDefByName(ReadStringValue(query, "name"));
+        if (!featureDef) {
+            throw std::runtime_error("Unknown FeatureDef name.");
+        }
+        return SerializeFeatureDef(featureDef);
+    }
+
+    if (type == "resource_by_name") {
+        springai::Resource* resource = callback->GetResourceByName(ReadStringValue(query, "name").c_str());
+        if (!resource) {
+            throw std::runtime_error("Unknown resource name.");
+        }
+
+        json result = SerializeResource(resource);
+        if (map) {
+            result["extractorRadius"] = map->GetExtractorRadius(resource);
+            result["maxResource"] = map->GetMaxResource(resource);
+            result["averageSpotIncome"] = map->GetResourceMapSpotsAverageIncome(resource);
+        }
+        if (economy) {
+            result["economy"] = {
+                {"current", economy->GetCurrent(resource)},
+                {"storage", economy->GetStorage(resource)},
+                {"income", economy->GetIncome(resource)},
+                {"usage", economy->GetUsage(resource)},
+                {"excess", economy->GetExcess(resource)}
+            };
+        }
+        return result;
+    }
+
+    if (type == "resource_spots_by_name") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        springai::Resource* resource = callback->GetResourceByName(ReadStringValue(query, "name").c_str());
+        if (!resource) {
+            throw std::runtime_error("Unknown resource name.");
+        }
+
+        json spots = json::array();
+        std::vector<springai::AIFloat3> positions = map->GetResourceMapSpotsPositions(resource);
+        for (const springai::AIFloat3& pos : positions) {
+            spots.push_back(json::array({pos.x, pos.y, pos.z}));
+        }
+
+        return json({
+            {"resource", SafeCString(resource->GetName())},
+            {"averageIncome", map->GetResourceMapSpotsAverageIncome(resource)},
+            {"spots", spots}
+        });
+    }
+
+    if (type == "nearest_resource_spot") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        springai::Resource* resource = callback->GetResourceByName(ReadStringValue(query, "name").c_str());
+        if (!resource) {
+            throw std::runtime_error("Unknown resource name.");
+        }
+
+        const springai::AIFloat3 origin = ReadPositionValue(query);
+        const springai::AIFloat3 nearest = map->GetResourceMapSpotsNearest(resource, origin);
+        return json({
+            {"resource", SafeCString(resource->GetName())},
+            {"from", json::array({origin.x, origin.y, origin.z})},
+            {"pos", json::array({nearest.x, nearest.y, nearest.z})}
+        });
+    }
+
+    if (type == "elevation_at") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        const springai::AIFloat3 pos = ReadPositionValue(query);
+        return json({
+            {"pos", json::array({pos.x, pos.y, pos.z})},
+            {"elevation", map->GetElevationAt(pos.x, pos.z)}
+        });
+    }
+
+    if (type == "start_position") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        const springai::AIFloat3 pos = map->GetStartPos();
+        return json({
+            {"pos", json::array({pos.x, pos.y, pos.z})}
+        });
+    }
+
+    if (type == "can_build_at") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        springai::UnitDef* unitDef = FindUnitDefById(ReadIntValue(query, "unitDefId"));
+        if (!unitDef) {
+            throw std::runtime_error("Unknown UnitDef ID.");
+        }
+
+        const springai::AIFloat3 pos = ReadPositionValue(query);
+        const int facing = query.contains("facing") ? ReadIntValue(query, "facing") : 0;
+        return json({
+            {"possible", map->IsPossibleToBuildAt(unitDef, pos, facing)},
+            {"pos", json::array({pos.x, pos.y, pos.z})},
+            {"facing", facing}
+        });
+    }
+
+    if (type == "closest_build_site") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        springai::UnitDef* unitDef = FindUnitDefById(ReadIntValue(query, "unitDefId"));
+        if (!unitDef) {
+            throw std::runtime_error("Unknown UnitDef ID.");
+        }
+
+        const springai::AIFloat3 pos = ReadPositionValue(query);
+        const float searchRadius = ReadFloatValue(query, "searchRadius");
+        const int minDist = query.contains("minDist") ? ReadIntValue(query, "minDist") : 0;
+        const int facing = query.contains("facing") ? ReadIntValue(query, "facing") : 0;
+        const springai::AIFloat3 result = map->FindClosestBuildSite(unitDef, pos, searchRadius, minDist, facing);
+
+        return json({
+            {"found", result.x >= 0.0f},
+            {"pos", json::array({result.x, result.y, result.z})},
+            {"facing", facing},
+            {"searchRadius", searchRadius},
+            {"minDist", minDist}
+        });
+    }
+
+    throw std::runtime_error("Unsupported query type.");
+}
+
+void CControllerAI::ProcessQueries() {
+    if (!server) {
+        return;
+    }
+
+    server->ProcessQueries([this](const json& query) {
+        return HandleQuery(query);
+    });
+}
+
 void CControllerAI::ProcessCommands() {
     if (!server) return;
 
@@ -546,13 +1350,15 @@ void CControllerAI::WaitForResume() {
 
     while (running) {
         if (game && game->GetCurrentFrame() < 0 && startupBlocking) {
-            if (!server->WaitForCommands()) return;
+            if (!server->WaitForWork()) return;
+            ProcessQueries();
             ProcessCommands();
             continue;
         }
 
         if (game && canChooseStartPos && !setupComplete) {
-            if (!server->WaitForCommands()) return;
+            if (!server->WaitForWork()) return;
+            ProcessQueries();
             ProcessCommands();
             continue;
         }
@@ -561,7 +1367,8 @@ void CControllerAI::WaitForResume() {
             return;
         }
 
-        if (!server->WaitForCommands()) return;
+        if (!server->WaitForWork()) return;
+        ProcessQueries();
         ProcessCommands();
     }
 }
@@ -645,6 +1452,10 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
 
     if (released && topic != EVENT_RELEASE) {
         return 0;
+    }
+
+    if (topic != EVENT_RELEASE) {
+        ProcessQueries();
     }
 
     if (topic == EVENT_RELEASE) {

@@ -7,6 +7,7 @@
 #include <memory>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -34,8 +35,10 @@ public:
 
     json GetSpawnBoxes() const;
 
+    json ExecuteQuery(json query);
+    void ProcessQueries(const std::function<json(const json&)>& handler);
     std::vector<json> DrainCommands();
-    bool WaitForCommands();
+    bool WaitForWork();
 
 private:
     struct WebSocketSession {
@@ -45,9 +48,20 @@ private:
         bool closed = false;
     };
 
+    struct QueryRequest {
+        std::mutex mutex;
+        std::condition_variable cv;
+        json query;
+        json response;
+        std::string error;
+        bool completed = false;
+    };
+
     void ConfigureRoutes();
     void Run();
     std::string BuildWebSocketMessage(const std::string& type, const json& data) const;
+    json BuildHttpQuery(const httplib::Request& req) const;
+    void CompleteQuery(const std::shared_ptr<QueryRequest>& request, json response, const std::string& error = std::string());
     void EnqueueCommand(json command);
     void EnqueueWebSocketMessage(const std::shared_ptr<WebSocketSession>& session, const std::string& message);
     void BroadcastWebSocketMessage(const std::string& message);
@@ -78,6 +92,9 @@ private:
     std::mutex commandMutex;
     std::condition_variable commandCv;
     std::queue<json> commandQueue;
+
+    std::mutex queryMutex;
+    std::queue<std::shared_ptr<QueryRequest>> queryQueue;
 };
 
 } // namespace controllerai

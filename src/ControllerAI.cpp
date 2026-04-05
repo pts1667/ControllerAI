@@ -144,14 +144,30 @@ void CControllerAI::CacheStaticData() {
     // 1. Game Info
     if (log) log->DoLog("ControllerAI: Caching game info");
     gameInfoCache = json::object();
-    gameInfoCache["modName"] = mod->GetHumanName();
-    gameInfoCache["mapName"] = map->GetHumanName();
-    gameInfoCache["gameMode"] = game->GetMode();
-    gameInfoCache["isPaused"] = game->IsPaused();
-    std::string script = game->GetSetupScript();
-    canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
-    gameInfoCache["canChooseStartPos"] = canChooseStartPos;
-    setupComplete = !canChooseStartPos;
+
+    if (mod) {
+        gameInfoCache["modName"] = mod->GetHumanName();
+    } else {
+        log->DoLog("ControllerAI: WARNING- no mod ???");
+    }
+    
+    if (map) {
+        gameInfoCache["mapName"] = map->GetHumanName();
+    } else {
+        log->DoLog("ControllerAI: WARNING- no map ???");
+    }
+    
+    if (game) {
+        gameInfoCache["gameMode"] = game->GetMode();
+        gameInfoCache["isPaused"] = game->IsPaused();
+
+        std::string script = game->GetSetupScript();
+        canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
+        gameInfoCache["canChooseStartPos"] = canChooseStartPos;
+        setupComplete = !canChooseStartPos;
+    } else {
+        log->DoLog("ControllerAI: WARNING- no game ???");
+    }
 
     // 2. Spawn Boxes
     if (log) log->DoLog("ControllerAI: Caching spawn boxes");

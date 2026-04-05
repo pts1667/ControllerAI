@@ -72,7 +72,7 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
         }
     }
 
-    ParseSpawnBoxes();
+    CacheStaticData();
     UpdateObservation(); // Generate frame -1 observation
 
     serverThread = std::thread(&CControllerAI::ServerThread, this);
@@ -94,90 +94,28 @@ void CControllerAI::ServerThread() {
     });
 
     svr.Get("/metadata", [this](const httplib::Request&, httplib::Response& res) {
-        if (unitDefsCache.empty()) {
-            CacheMetadata();
-        }
+        std::lock_guard<std::mutex> lock(stateMutex);
         res.set_content(unitDefsCache.dump(), "application/json");
     });
 
     svr.Get("/game_info", [this](const httplib::Request&, httplib::Response& res) {
-        if (!game || !mod || !map) {
-            res.status = 500;
-            return;
-        }
-        
-        json info;
-        info["modName"] = mod->GetHumanName();
-        info["mapName"] = map->GetHumanName();
-        info["gameMode"] = game->GetMode();
-        info["isPaused"] = game->IsPaused();
-        
-        // Setup data (start post type, etc)
-        std::string script = game->GetSetupScript();
-        info["canChooseStartPos"] = (script.find("startpostype=1") != std::string::npos); // StartPos_ChooseInGame
-        
-        res.set_content(info.dump(), "application/json");
+        std::lock_guard<std::mutex> lock(stateMutex);
+        res.set_content(gameInfoCache.dump(), "application/json");
     });
 
     svr.Get("/spawn_boxes", [this](const httplib::Request&, httplib::Response& res) {
-        res.set_content(spawnBoxes.dump(), "application/json");
+        std::lock_guard<std::mutex> lock(stateMutex);
+        res.set_content(spawnBoxesCache.dump(), "application/json");
     });
 
     svr.Get("/map_features", [this](const httplib::Request&, httplib::Response& res) {
-        if (!callback || !map) {
-            res.status = 500;
-            return;
-        }
-        json out = json::object();
-        
-        // 1. Resource Spots
-        out["spots"] = json::array();
-        std::vector<springai::Resource*> resources = callback->GetResources();
-        for (springai::Resource* res_ptr : resources) {
-            std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
-            for (const auto& spot_pos : spots) {
-                json s;
-                s["resource"] = res_ptr->GetName();
-                s["pos"] = json::array({spot_pos.x, spot_pos.y, spot_pos.z}); // y is value/income
-                out["spots"].push_back(s);
-            }
-            delete res_ptr;
-        }
-
-        // 2. Map Features (trees, rocks, etc)
-        out["features"] = json::array();
-        std::vector<springai::Feature*> features = callback->GetFeatures();
-        for (springai::Feature* f : features) {
-            json fj;
-            fj["id"] = f->GetFeatureId();
-            springai::AIFloat3 f_pos = f->GetPosition();
-            fj["pos"] = json::array({f_pos.x, f_pos.y, f_pos.z});
-
-            fj["health"] = f->GetHealth();
-            const std::unique_ptr<springai::FeatureDef> def(f->GetDef());
-            if (def) fj["name"] = def->GetName();
-            out["features"].push_back(fj);
-            delete f;
-        }
-        
-        res.set_content(out.dump(), "application/json");
+        std::lock_guard<std::mutex> lock(stateMutex);
+        res.set_content(mapFeaturesCache.dump(), "application/json");
     });
 
     svr.Get("/heightmap", [this](const httplib::Request&, httplib::Response& res) {
-        if (!map) {
-            res.status = 500;
-            return;
-        }
-        int width = map->GetWidth();
-        int height = map->GetHeight();
-        std::vector<float> heights = map->GetHeightMap();
-        
-        json out;
-        out["width"] = width;
-        out["height"] = height;
-        out["data_b64"] = Base64Encode(reinterpret_cast<const unsigned char*>(heights.data()), heights.size() * sizeof(float));
-        
-        res.set_content(out.dump(), "application/json");
+        std::lock_guard<std::mutex> lock(stateMutex);
+        res.set_content(heightmapCache.dump(), "application/json");
     });
 
     svr.Post("/command", [this](const httplib::Request& req, httplib::Response& res) {
@@ -198,52 +136,108 @@ void CControllerAI::ServerThread() {
     svr.listen(bindAddress.c_str(), port);
 }
 
-void CControllerAI::ParseSpawnBoxes() {
-    if (!game || !map) return;
-    std::string script = game->GetSetupScript();
-    
-    int width = map->GetWidth() * 8; // Heightmap pixels to elmos
-    int height = map->GetHeight() * 8;
+void CControllerAI::CacheStaticData() {
+    if (!callback || !game || !map || !mod) return;
+    std::lock_guard<std::mutex> lock(stateMutex);
 
+    // 1. Game Info
+    gameInfoCache = json::object();
+    gameInfoCache["modName"] = mod->GetHumanName();
+    gameInfoCache["mapName"] = map->GetHumanName();
+    gameInfoCache["gameMode"] = game->GetMode();
+    gameInfoCache["isPaused"] = game->IsPaused();
+    std::string script = game->GetSetupScript();
     canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
+    gameInfoCache["canChooseStartPos"] = canChooseStartPos;
     setupComplete = !canChooseStartPos;
 
-    spawnBoxes = json::object();
+    // 2. Spawn Boxes
+    spawnBoxesCache = json::object();
+    int width_elmos = map->GetWidth() * 8;
+    int height_elmos = map->GetHeight() * 8;
     
-    // 1. Standard Spring format: [allyteam] { rect=left top right bottom; }
-    // 2. Zero-K format: startboxes=return { [0] = { 0, 0, 0.25, 1 }, ... };
-    
-    // Simplistic regex for ZK style first as it's common in Recoil
     std::regex zkPattern("\\[(\\d+)\\]\\s*=\\s*\\{\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)\\s*\\}");
     auto zk_it = std::sregex_iterator(script.begin(), script.end(), zkPattern);
     auto zk_end = std::sregex_iterator();
-
     for (std::sregex_iterator i = zk_it; i != zk_end; ++i) {
         std::smatch match = *i;
         int allyId = std::stoi(match[1]);
         json box;
-        box["left"] = std::stof(match[2]) * width;
-        box["top"] = std::stof(match[3]) * height;
-        box["right"] = std::stof(match[4]) * width;
-        box["bottom"] = std::stof(match[5]) * height;
-        spawnBoxes[std::to_string(allyId)] = box;
+        box["left"] = std::stof(match[2]) * width_elmos;
+        box["top"] = std::stof(match[3]) * height_elmos;
+        box["right"] = std::stof(match[4]) * width_elmos;
+        box["bottom"] = std::stof(match[5]) * height_elmos;
+        spawnBoxesCache[std::to_string(allyId)] = box;
     }
-
-    // Fallback/Standard format search
-    if (spawnBoxes.empty()) {
+    if (spawnBoxesCache.empty()) {
         std::regex stdPattern("allyteam(\\d+)\\s*\\{[^}]*rect\\s*=\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)");
         auto std_it = std::sregex_iterator(script.begin(), script.end(), stdPattern);
         for (std::sregex_iterator i = std_it; i != zk_end; ++i) {
             std::smatch match = *i;
             int allyId = std::stoi(match[1]);
             json box;
-            box["left"] = std::stof(match[2]); // Standard uses absolute elmos usually
+            box["left"] = std::stof(match[2]);
             box["top"] = std::stof(match[3]);
             box["right"] = std::stof(match[4]);
             box["bottom"] = std::stof(match[5]);
-            spawnBoxes[std::to_string(allyId)] = box;
+            spawnBoxesCache[std::to_string(allyId)] = box;
         }
     }
+
+    // 3. Unit Metadata
+    unitDefsCache = json::object();
+    std::vector<springai::UnitDef*> defs = callback->GetUnitDefs();
+    for (springai::UnitDef* def : defs) {
+        json d;
+        d["name"] = def->GetName();
+        d["humanName"] = def->GetHumanName();
+        d["buildTime"] = def->GetBuildTime();
+        d["health"] = def->GetHealth();
+        d["speed"] = def->GetSpeed();
+        d["range"] = def->GetMaxWeaponRange();
+        unitDefsCache[std::to_string(def->GetUnitDefId())] = d;
+        delete def;
+    }
+
+    // 4. Map Features & Resources
+    mapFeaturesCache = json::object();
+    mapFeaturesCache["spots"] = json::array();
+    std::vector<springai::Resource*> resources = callback->GetResources();
+    for (springai::Resource* res_ptr : resources) {
+        std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
+        for (const auto& spot_pos : spots) {
+            json s;
+            s["resource"] = res_ptr->GetName();
+            s["pos"] = json::array({spot_pos.x, spot_pos.y, spot_pos.z});
+            mapFeaturesCache["spots"].push_back(s);
+        }
+        delete res_ptr;
+    }
+    mapFeaturesCache["features"] = json::array();
+    std::vector<springai::Feature*> features = callback->GetFeatures();
+    for (springai::Feature* f : features) {
+        json fj;
+        fj["id"] = f->GetFeatureId();
+        springai::AIFloat3 f_pos = f->GetPosition();
+        fj["pos"] = json::array({f_pos.x, f_pos.y, f_pos.z});
+        fj["health"] = f->GetHealth();
+        springai::FeatureDef* fdef = f->GetDef();
+        if (fdef) {
+            fj["name"] = fdef->GetName();
+            delete fdef;
+        }
+        mapFeaturesCache["features"].push_back(fj);
+        delete f;
+    }
+
+    // 5. Heightmap
+    heightmapCache = json::object();
+    int h_width = map->GetWidth();
+    int h_height = map->GetHeight();
+    std::vector<float> heights = map->GetHeightMap();
+    heightmapCache["width"] = h_width;
+    heightmapCache["height"] = h_height;
+    heightmapCache["data_b64"] = Base64Encode(reinterpret_cast<const unsigned char*>(heights.data()), heights.size() * sizeof(float));
 }
 
 bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
@@ -251,14 +245,15 @@ bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
     int myAlly = game->GetMyAllyTeam();
     
     std::string allyStr = std::to_string(myAlly);
-    if (spawnBoxes.contains(allyStr)) {
-        auto box = spawnBoxes[allyStr];
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (spawnBoxesCache.contains(allyStr)) {
+        auto box = spawnBoxesCache[allyStr];
         if (pos.x < box["left"] || pos.x > box["right"] || pos.z < box["top"] || pos.z > box["bottom"]) {
             return false;
         }
     }
 
-    // Engine validation via LuaRules. We try both / and , separators for compatibility.
+    // Engine validation via LuaRules.
     std::string formats[] = { ",", "/" };
     for (const std::string& sep : formats) {
         std::stringstream ss;
@@ -268,25 +263,6 @@ bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
     }
 
     return true;
-}
-
-void CControllerAI::CacheMetadata() {
-    if (!callback) return;
-    std::vector<springai::UnitDef*> defs = callback->GetUnitDefs();
-    json jDefs = json::object();
-    for (springai::UnitDef* def : defs) {
-        json d;
-        d["name"] = def->GetName();
-        d["humanName"] = def->GetHumanName();
-        d["buildTime"] = def->GetBuildTime();
-        d["health"] = def->GetHealth();
-        d["speed"] = def->GetSpeed();
-        d["range"] = def->GetMaxWeaponRange();
-        // Add more as needed
-        jDefs[std::to_string(def->GetUnitDefId())] = d;
-        delete def;
-    }
-    unitDefsCache = jDefs;
 }
 
 std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
@@ -336,8 +312,13 @@ void CControllerAI::UpdateObservation() {
     obs["units"] = json::object();
     std::vector<springai::Unit*> myUnits = callback->GetFriendlyUnits();
     for (springai::Unit* unit : myUnits) {
+        if (!unit) continue;
         json u;
-        u["defId"] = unit->GetDef()->GetUnitDefId();
+        springai::UnitDef* def = unit->GetDef();
+        if (def) {
+            u["defId"] = def->GetUnitDefId();
+            delete def;
+        }
         springai::AIFloat3 pos = unit->GetPos();
         springai::AIFloat3 vel = unit->GetVel();
         u["pos"] = json::array({pos.x, pos.y, pos.z});
@@ -361,10 +342,10 @@ void CControllerAI::UpdateObservation() {
         springai::AIFloat3 pos = unit->GetPos();
         e["pos"] = json::array({pos.x, pos.y, pos.z});
         
-        // defId and health might only be available in LOS (not radar-only)
         springai::UnitDef* def = unit->GetDef();
         if (def) {
             e["defId"] = def->GetUnitDefId();
+            delete def;
         }
         e["health"] = unit->GetHealth();
         

@@ -73,12 +73,14 @@ private:
     void UpdateObservation();
     void ProcessCommands();
     
-    // Metadata cache
+    // Metadata and static-ish caches
     json unitDefsCache;
-    void CacheMetadata();
+    json gameInfoCache;
+    json spawnBoxesCache;
+    json mapFeaturesCache;
+    json heightmapCache;
+    void CacheStaticData();
 
-    json spawnBoxes;
-    void ParseSpawnBoxes();
     bool IsSpawnPosValid(const springai::AIFloat3& pos);
 
     std::string Base64Encode(const unsigned char* data, size_t len);

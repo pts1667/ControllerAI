@@ -49,6 +49,7 @@ private:
     bool setupComplete;
     bool canChooseStartPos;
     bool frameFinished;
+    bool startupBlocking;
     bool released;
 
     // Helper for event serialization

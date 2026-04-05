@@ -8,7 +8,7 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 2.  **Observation**: Every game frame (and during the pre-match phase), the AI updates its internal state. External services can either poll `/observation` or use `ws://localhost:3017/ws` as a bidirectional frame loop.
 3.  **WebSocket Bootstrap**: On connect, the WebSocket sends the cached startup data you would otherwise fetch from `/game_info`, `/spawn_boxes`, `/metadata`, `/map_features`, `/heightmap`, and then the latest observation if available.
 4.  **Commands**: External services POST JSON commands to `/command` or send the same JSON payloads on `/ws`. These are executed on the next engine update.
-5. **Synchronous Control**: By default, the engine blocks the main thread during the setup phase (frame -1) until a start position is chosen. Once the game starts, it pauses at the end of every frame until you send a `finish_frame` command.
+5. **Synchronous Control**: By default, the engine can already block during startup handling so setup commands such as `set_commander`, `set_side`, and `set_start_pos` can be processed before the match proceeds. Before the first `EVENT_UPDATE`, the AI stays in a startup command loop. If the game requires choosing a start position, a valid `set_start_pos` unblocks startup. Otherwise, send `finish_frame` after your startup commands to let the match proceed. Once the game starts, it pauses at the end of every frame until you send a `finish_frame` command.
 
 ## Configuration
 
@@ -160,11 +160,13 @@ Returns the defined start boxes for each ally team.
 Returns startup metadata for the current match.
 
 Typical startup flow:
-1. Poll `/observation` until the AI is initialized.
+1. Poll `/observation` or connect to `/ws` until the AI is initialized.
 2. Read `/game_info` to check whether startup setup is still available.
 3. If the game allows it, send `set_commander` before choosing a start position.
-4. If `canChooseStartPos` is true, read `/spawn_boxes` and send `set_start_pos`. **This unblocks the engine setup phase.**
-5. Once the match reaches frame 0, the engine will block again (if `sync=true`). Call `finish_frame` to proceed with the game loop.
+4. Send any startup commands you need, such as `set_commander` or `set_side`.
+5. If `canChooseStartPos` is true, read `/spawn_boxes` and send `set_start_pos`. **This unblocks the engine setup phase.**
+6. If no start position choice is required, send `finish_frame` to end the startup command loop.
+7. Once the match reaches frame 0, the engine will block again (if `sync=true`). Call `finish_frame` to proceed with the game loop.
 
 **Example Response:**
 ```json

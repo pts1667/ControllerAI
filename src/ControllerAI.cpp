@@ -44,6 +44,7 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     setupComplete(true),
     canChooseStartPos(false),
     frameFinished(true),
+    startupBlocking(true),
     released(false)
 {
     if (callback) {
@@ -116,6 +117,7 @@ void CControllerAI::CacheStaticData() {
         script = SafeCString(game->GetSetupScript());
         canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
         setupComplete = !canChooseStartPos;
+        startupBlocking = true;
     }
     gameInfoCache["canChooseStartPos"] = canChooseStartPos;
     gameInfoCache["supportsWebsocketApi"] = true;
@@ -298,6 +300,7 @@ void CControllerAI::Release(int /*reason*/) {
     running = false;
     frameFinished = true;
     setupComplete = true;
+    startupBlocking = false;
     eventBuffer = json::array();
 
     if (server) {
@@ -504,6 +507,7 @@ void CControllerAI::ProcessCommands() {
                     if (game) game->SendStartPosition(ready, pos);
                     if (ready) {
                         setupComplete = true;
+                        startupBlocking = false;
                     }
                 } else {
                     // Logic to inform user could be via text message or a status code if we wait
@@ -527,7 +531,11 @@ void CControllerAI::ProcessCommands() {
                     lua->CallRules(data.c_str(), (int)data.size());
                 }
             } else if (type == "finish_frame") {
-                frameFinished = true;
+                if (game && game->GetCurrentFrame() < 0) {
+                    startupBlocking = false;
+                } else {
+                    frameFinished = true;
+                }
             }
         } catch (...) {}
     }
@@ -537,6 +545,12 @@ void CControllerAI::WaitForResume() {
     if (!server) return;
 
     while (running) {
+        if (game && game->GetCurrentFrame() < 0 && startupBlocking) {
+            if (!server->WaitForCommands()) return;
+            ProcessCommands();
+            continue;
+        }
+
         if (game && canChooseStartPos && !setupComplete) {
             if (!server->WaitForCommands()) return;
             ProcessCommands();
@@ -642,6 +656,8 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     if (topic == EVENT_INIT) {
         CacheStaticData();
         UpdateObservation();
+        WaitForResume();
+        return 0;
     }
 
     // Capture events

@@ -101,25 +101,37 @@ void CControllerAI::CacheStaticData() {
 
     if (log) log->DoLog("ControllerAI: Caching game info");
     if (mod) {
+        if (log) log->DoLog("ControllerAI: Caching game info: reading mod human name");
         gameInfoCache["modName"] = SafeCString(mod->GetHumanName());
+        if (log) log->DoLog("ControllerAI: Caching game info: mod human name read");
     } else if (log) {
         log->DoLog("ControllerAI: WARNING- no mod ???");
     }
 
     if (map) {
+        if (log) log->DoLog("ControllerAI: Caching game info: reading map human name");
         gameInfoCache["mapName"] = SafeCString(map->GetHumanName());
+        if (log) log->DoLog("ControllerAI: Caching game info: map human name read");
     } else if (log) {
         log->DoLog("ControllerAI: WARNING- no map ???");
     }
 
     std::string script;
     if (game) {
+        if (log) log->DoLog("ControllerAI: Caching game info: reading game mode");
         gameInfoCache["gameMode"] = game->GetMode();
+        if (log) log->DoLog("ControllerAI: Caching game info: game mode read");
+        if (log) log->DoLog("ControllerAI: Caching game info: reading paused state");
         gameInfoCache["isPaused"] = game->IsPaused();
+        if (log) log->DoLog("ControllerAI: Caching game info: paused state read");
 
+        if (log) log->DoLog("ControllerAI: Caching game info: reading setup script");
         script = SafeCString(game->GetSetupScript());
+        if (log) log->DoLog("ControllerAI: Caching game info: setup script read");
+        if (log) log->DoLog("ControllerAI: Caching game info: checking start position mode");
         canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
         setupComplete = !canChooseStartPos;
+        if (log) log->DoLog("ControllerAI: Caching game info: start position mode checked");
     } else if (log) {
         log->DoLog("ControllerAI: WARNING- no game ???");
     }

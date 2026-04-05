@@ -6,8 +6,8 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 
 1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. It starts a background HTTP/WebSocket server on `localhost:3017`.
 2.  **Observation**: Every game frame (and during the pre-match phase), the AI updates its internal state. External services can either poll `/observation` or use `ws://localhost:3017/ws` as a bidirectional frame loop.
-3.  **Game Info**: External services can query `/game_info` during startup to discover map metadata, game mode, pause state, and whether the AI is still allowed to choose its start position.
-4.  **Commands**: External services POST JSON commands to `/command`. These are executed on the next engine update.
+3.  **WebSocket Bootstrap**: On connect, the WebSocket sends the cached startup data you would otherwise fetch from `/game_info`, `/spawn_boxes`, `/metadata`, `/map_features`, `/heightmap`, and then the latest observation if available.
+4.  **Commands**: External services POST JSON commands to `/command` or send the same JSON payloads on `/ws`. These are executed on the next engine update.
 5. **Synchronous Control**: By default, the engine blocks the main thread during the setup phase (frame -1) until a start position is chosen. Once the game starts, it pauses at the end of every frame until you send a `finish_frame` command.
 
 ## Configuration
@@ -61,18 +61,71 @@ Returns static data about all unit types available in the current game/mod.
 ### 1b. `GET /ws`
 Runs the full synchronous observation/command loop on a single WebSocket connection.
 
-- Sends the latest snapshot immediately after connect if one is already available.
+- Sends cached `game_info`, `spawn_boxes`, `metadata`, `map_features`, `heightmap`, and then the latest observation immediately after connect when available.
 - Sends each subsequent observation when the engine publishes the next frame.
 - Accepts the same JSON command payloads as `POST /command`.
 - Supports either one command per message or an array of command objects in a single message.
+- Supports websocket request messages for the HTTP resources: `get_all`, `get_observation`, `get_game_info`, `get_spawn_boxes`, `get_metadata`, `get_map_features`, and `get_heightmap`.
 - In synchronous mode, send commands for the current frame and end the batch with `finish_frame`. The next observation is sent after the engine resumes and publishes it.
+
+Server-to-client WebSocket messages are wrapped as:
+
+```json
+{
+  "type": "observation",
+  "data": { ... }
+}
+```
+
+The `type` field will be one of `game_info`, `spawn_boxes`, `metadata`, `map_features`, `heightmap`, `observation`, or `error`.
 
 **JavaScript example:**
 ```javascript
 const ws = new WebSocket("ws://127.0.0.1:3017/ws");
 
+const state = {
+  gameInfo: null,
+  spawnBoxes: null,
+  metadata: null,
+  mapFeatures: null,
+  heightmap: null,
+};
+
 ws.onmessage = (event) => {
-  const obs = JSON.parse(event.data);
+  const message = JSON.parse(event.data);
+
+  if (message.type === "game_info") {
+    state.gameInfo = message.data;
+    console.log("map size", state.gameInfo.mapWidthElmos, state.gameInfo.mapHeightElmos);
+    return;
+  }
+
+  if (message.type === "spawn_boxes") {
+    state.spawnBoxes = message.data;
+    return;
+  }
+
+  if (message.type === "metadata") {
+    state.metadata = message.data;
+    return;
+  }
+
+  if (message.type === "map_features") {
+    state.mapFeatures = message.data;
+    return;
+  }
+
+  if (message.type === "heightmap") {
+    state.heightmap = message.data;
+    return;
+  }
+
+  if (message.type !== "observation") {
+    console.error(message);
+    return;
+  }
+
+  const obs = message.data;
   console.log("frame", obs.frame);
 
   for (const unitId of Object.keys(obs.units)) {
@@ -107,9 +160,15 @@ Typical startup flow:
 {
   "modName": "Balanced Annihilation",
   "mapName": "TitanDuel 2.2",
+  "mapWidth": 1024,
+  "mapHeight": 1024,
+  "mapWidthElmos": 8192,
+  "mapHeightElmos": 8192,
   "gameMode": 0,
   "isPaused": true,
   "canChooseStartPos": true,
+  "supportsWebsocketApi": true,
+  "websocketPath": "/ws",
   "supportsWebsocketObservation": true,
   "websocketObservationPath": "/ws"
 }
@@ -124,7 +183,7 @@ Returns the dynamic heightmap as a Base64 encoded string of `float32` values.
 ### 7. `POST /command`
 Sends a command to the engine. Standard fields: `unitId`, `type`, `pos`, `targetId`, `options`.
 
-This endpoint remains available for simple integrations or mixed HTTP/WebSocket clients. WebSocket clients can send the same command JSON messages on `/ws` instead.
+This endpoint remains available for simple integrations or mixed HTTP/WebSocket clients. WebSocket clients can send the same command JSON messages on `/ws` instead and can fetch the same cached resources over WebSocket without touching the HTTP endpoints.
 
 **Match Start Command:**
 - `set_start_pos`: Set your initial spawn point. Requires `pos`.
@@ -140,7 +199,7 @@ This endpoint remains available for simple integrations or mixed HTTP/WebSocket 
 
 ## Complete Match Lifecycle (Python Example)
 
-This example shows how to wait for the match to initialize, read startup metadata, choose a start position within your box, and run a synchronous game loop.
+This example shows the HTTP fallback flow. With `/ws`, you can connect once, receive the startup data over WebSocket, choose a start position, and run the frame loop without touching the REST endpoints.
 
 ```python
 import requests

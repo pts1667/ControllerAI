@@ -47,9 +47,13 @@ private:
 
     void ConfigureRoutes();
     void Run();
+    std::string BuildWebSocketMessage(const std::string& type, const json& data) const;
     void EnqueueCommand(json command);
-    void EnqueueWebSocketObservation(const std::string& observation);
-    void EnqueueWebSocketCommands(const std::string& message);
+    void EnqueueWebSocketMessage(const std::shared_ptr<WebSocketSession>& session, const std::string& message);
+    void BroadcastWebSocketMessage(const std::string& message);
+    void SendCurrentStateToWebSocketSession(const std::shared_ptr<WebSocketSession>& session);
+    void HandleWebSocketPayload(const std::shared_ptr<WebSocketSession>& session, json payload);
+    void HandleWebSocketCommandOrRequest(const std::shared_ptr<WebSocketSession>& session, json payload);
     void RemoveWebSocketSession(const std::shared_ptr<WebSocketSession>& session);
 
     std::string bindAddress;

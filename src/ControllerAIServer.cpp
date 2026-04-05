@@ -24,6 +24,10 @@ CControllerAIServer::~CControllerAIServer() {
     Stop();
 }
 
+std::string CControllerAIServer::BuildWebSocketMessage(const std::string& type, const json& data) const {
+    return json({{"type", type}, {"data", data}}).dump();
+}
+
 void CControllerAIServer::Start() {
     bool expected = false;
     if (!running.compare_exchange_strong(expected, true)) {
@@ -64,35 +68,60 @@ void CControllerAIServer::PublishObservation(json observation) {
         std::lock_guard<std::mutex> lock(snapshotMutex);
         lastObservation = std::move(observation);
         lastObservationSerialized = lastObservation.dump();
-        serialized = lastObservationSerialized;
+        serialized = BuildWebSocketMessage("observation", lastObservation);
     }
 
-    EnqueueWebSocketObservation(serialized);
+    BroadcastWebSocketMessage(serialized);
 }
 
 void CControllerAIServer::PublishMetadata(json metadata) {
-    std::lock_guard<std::mutex> lock(snapshotMutex);
-    unitDefsCache = std::move(metadata);
+    std::string serialized;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        unitDefsCache = std::move(metadata);
+        serialized = BuildWebSocketMessage("metadata", unitDefsCache);
+    }
+    BroadcastWebSocketMessage(serialized);
 }
 
 void CControllerAIServer::PublishGameInfo(json gameInfo) {
-    std::lock_guard<std::mutex> lock(snapshotMutex);
-    gameInfoCache = std::move(gameInfo);
+    std::string serialized;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        gameInfoCache = std::move(gameInfo);
+        serialized = BuildWebSocketMessage("game_info", gameInfoCache);
+    }
+    BroadcastWebSocketMessage(serialized);
 }
 
 void CControllerAIServer::PublishSpawnBoxes(json spawnBoxes) {
-    std::lock_guard<std::mutex> lock(snapshotMutex);
-    spawnBoxesCache = std::move(spawnBoxes);
+    std::string serialized;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        spawnBoxesCache = std::move(spawnBoxes);
+        serialized = BuildWebSocketMessage("spawn_boxes", spawnBoxesCache);
+    }
+    BroadcastWebSocketMessage(serialized);
 }
 
 void CControllerAIServer::PublishMapFeatures(json mapFeatures) {
-    std::lock_guard<std::mutex> lock(snapshotMutex);
-    mapFeaturesCache = std::move(mapFeatures);
+    std::string serialized;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        mapFeaturesCache = std::move(mapFeatures);
+        serialized = BuildWebSocketMessage("map_features", mapFeaturesCache);
+    }
+    BroadcastWebSocketMessage(serialized);
 }
 
 void CControllerAIServer::PublishHeightmap(json heightmap) {
-    std::lock_guard<std::mutex> lock(snapshotMutex);
-    heightmapCache = std::move(heightmap);
+    std::string serialized;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        heightmapCache = std::move(heightmap);
+        serialized = BuildWebSocketMessage("heightmap", heightmapCache);
+    }
+    BroadcastWebSocketMessage(serialized);
 }
 
 json CControllerAIServer::GetSpawnBoxes() const {
@@ -127,7 +156,17 @@ void CControllerAIServer::EnqueueCommand(json command) {
     commandCv.notify_one();
 }
 
-void CControllerAIServer::EnqueueWebSocketObservation(const std::string& observation) {
+void CControllerAIServer::EnqueueWebSocketMessage(const std::shared_ptr<WebSocketSession>& session, const std::string& message) {
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->closed) {
+        return;
+    }
+
+    session->outgoingMessages.push(message);
+    session->cv.notify_one();
+}
+
+void CControllerAIServer::BroadcastWebSocketMessage(const std::string& message) {
     std::vector<std::shared_ptr<WebSocketSession>> sessions;
     {
         std::lock_guard<std::mutex> lock(websocketMutex);
@@ -135,33 +174,94 @@ void CControllerAIServer::EnqueueWebSocketObservation(const std::string& observa
     }
 
     for (const auto& session : sessions) {
-        std::lock_guard<std::mutex> lock(session->mutex);
-        if (session->closed) {
-            continue;
-        }
-
-        session->outgoingMessages.push(observation);
-        session->cv.notify_one();
+        EnqueueWebSocketMessage(session, message);
     }
 }
 
-void CControllerAIServer::EnqueueWebSocketCommands(const std::string& message) {
-    try {
-        json payload = json::parse(message);
-        if (payload.is_array()) {
-            for (auto& command : payload) {
-                if (command.is_object()) {
-                    EnqueueCommand(std::move(command));
-                }
-            }
-            return;
+void CControllerAIServer::SendCurrentStateToWebSocketSession(const std::shared_ptr<WebSocketSession>& session) {
+    std::vector<std::string> messages;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        if (!gameInfoCache.empty()) {
+            messages.push_back(BuildWebSocketMessage("game_info", gameInfoCache));
         }
-
-        if (payload.is_object()) {
-            EnqueueCommand(std::move(payload));
+        if (!spawnBoxesCache.empty()) {
+            messages.push_back(BuildWebSocketMessage("spawn_boxes", spawnBoxesCache));
         }
-    } catch (...) {
+        if (!unitDefsCache.empty()) {
+            messages.push_back(BuildWebSocketMessage("metadata", unitDefsCache));
+        }
+        if (!mapFeaturesCache.empty()) {
+            messages.push_back(BuildWebSocketMessage("map_features", mapFeaturesCache));
+        }
+        if (!heightmapCache.empty()) {
+            messages.push_back(BuildWebSocketMessage("heightmap", heightmapCache));
+        }
+        if (!lastObservationSerialized.empty()) {
+            messages.push_back(BuildWebSocketMessage("observation", lastObservation));
+        }
     }
+
+    for (const auto& message : messages) {
+        EnqueueWebSocketMessage(session, message);
+    }
+}
+
+void CControllerAIServer::HandleWebSocketPayload(const std::shared_ptr<WebSocketSession>& session, json payload) {
+    if (payload.is_array()) {
+        for (auto& item : payload) {
+            HandleWebSocketCommandOrRequest(session, std::move(item));
+        }
+        return;
+    }
+
+    HandleWebSocketCommandOrRequest(session, std::move(payload));
+}
+
+void CControllerAIServer::HandleWebSocketCommandOrRequest(const std::shared_ptr<WebSocketSession>& session, json payload) {
+    if (!payload.is_object()) {
+        EnqueueWebSocketMessage(session, BuildWebSocketMessage("error", json({{"message", "WebSocket payload must be a JSON object or array of objects."}})));
+        return;
+    }
+
+    const std::string type = payload.value("type", std::string());
+    if (type.empty()) {
+        EnqueueWebSocketMessage(session, BuildWebSocketMessage("error", json({{"message", "Missing message type."}})));
+        return;
+    }
+
+    json response;
+    bool handledRequest = true;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        if (type == "get_observation") {
+            response = lastObservation;
+        } else if (type == "get_game_info") {
+            response = gameInfoCache;
+        } else if (type == "get_spawn_boxes") {
+            response = spawnBoxesCache;
+        } else if (type == "get_metadata") {
+            response = unitDefsCache;
+        } else if (type == "get_map_features") {
+            response = mapFeaturesCache;
+        } else if (type == "get_heightmap") {
+            response = heightmapCache;
+        } else {
+            handledRequest = false;
+        }
+    }
+
+    if (type == "get_all") {
+        SendCurrentStateToWebSocketSession(session);
+        return;
+    }
+
+    if (handledRequest) {
+        EnqueueWebSocketMessage(session, BuildWebSocketMessage(type.substr(4), response));
+        return;
+    }
+
+    EnqueueCommand(std::move(payload));
 }
 
 void CControllerAIServer::RemoveWebSocketSession(const std::shared_ptr<WebSocketSession>& session) {
@@ -183,13 +283,7 @@ void CControllerAIServer::ConfigureRoutes() {
             websocketSessions.push_back(session);
         }
 
-        {
-            std::lock_guard<std::mutex> lock(snapshotMutex);
-            if (!lastObservationSerialized.empty()) {
-                session->outgoingMessages.push(lastObservationSerialized);
-            }
-        }
-        session->cv.notify_one();
+        SendCurrentStateToWebSocketSession(session);
 
         std::thread sender([session, &ws]() {
             while (true) {
@@ -229,7 +323,11 @@ void CControllerAIServer::ConfigureRoutes() {
             }
 
             if (readResult == httplib::ws::Text) {
-                EnqueueWebSocketCommands(message);
+                try {
+                    HandleWebSocketPayload(session, json::parse(message));
+                } catch (const std::exception& e) {
+                    EnqueueWebSocketMessage(session, BuildWebSocketMessage("error", json({{"message", e.what()}})));
+                }
             }
         }
 

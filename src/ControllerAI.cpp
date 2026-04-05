@@ -104,6 +104,10 @@ void CControllerAI::CacheStaticData() {
 
     if (map) {
         gameInfoCache["mapName"] = SafeCString(map->GetHumanName());
+        gameInfoCache["mapWidth"] = map->GetWidth();
+        gameInfoCache["mapHeight"] = map->GetHeight();
+        gameInfoCache["mapWidthElmos"] = map->GetWidth() * 8;
+        gameInfoCache["mapHeightElmos"] = map->GetHeight() * 8;
     }
 
     std::string script;
@@ -116,6 +120,8 @@ void CControllerAI::CacheStaticData() {
         setupComplete = !canChooseStartPos;
     }
     gameInfoCache["canChooseStartPos"] = canChooseStartPos;
+    gameInfoCache["supportsWebsocketApi"] = true;
+    gameInfoCache["websocketPath"] = "/ws";
     gameInfoCache["supportsWebsocketObservation"] = true;
     gameInfoCache["websocketObservationPath"] = "/ws";
 
@@ -285,6 +291,33 @@ std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
     return ret;
 }
 
+std::tuple<int, json> CControllerAI::ParseUnit(springai::Unit* unit) {
+    if (!unit) return std::make_tuple(-1, json());
+
+    json u;
+    springai::UnitDef* def = unit->GetDef();
+    if (def) {
+        u["defId"] = def->GetUnitDefId();
+        u["name"] = SafeCString(def->GetName());
+    }
+
+    springai::AIFloat3 pos = unit->GetPos();
+    springai::AIFloat3 vel = unit->GetVel();
+
+    u["allyTeam"] = unit->GetAllyTeam();
+    u["pos"] = json::array({pos.x, pos.y, pos.z});
+    u["vel"] = json::array({vel.x, vel.y, vel.z});
+    u["health"] = unit->GetHealth();
+    u["maxHealth"] = unit->GetMaxHealth();
+    u["experience"] = unit->GetExperience();
+    u["buildProgress"] = unit->GetBuildProgress();
+    u["isBeingBuilt"] = unit->IsBeingBuilt();
+    u["isCloaked"] = unit->IsCloaked();
+    u["isParalyzed"] = unit->IsParalyzed();
+
+    return std::make_tuple(unit->GetUnitId(), u);
+}
+
 void CControllerAI::UpdateObservation() {
     if (!callback || !game || !economy || !server) return;
 
@@ -299,25 +332,9 @@ void CControllerAI::UpdateObservation() {
     std::vector<springai::Unit*> myUnits = callback->GetFriendlyUnits();
     for (springai::Unit* unit : myUnits) {
         if (!unit) continue;
-        json u;
-        springai::UnitDef* def = unit->GetDef();
-        if (def) {
-            u["defId"] = def->GetUnitDefId();
-            u["name"] = SafeCString(def->GetName());
-        }
-
-        springai::AIFloat3 pos = unit->GetPos();
-        springai::AIFloat3 vel = unit->GetVel();
-        u["pos"] = json::array({pos.x, pos.y, pos.z});
-        u["vel"] = json::array({vel.x, vel.y, vel.z});
-        u["health"] = unit->GetHealth();
-        u["maxHealth"] = unit->GetMaxHealth();
-        u["experience"] = unit->GetExperience();
-        u["buildProgress"] = unit->GetBuildProgress();
-        u["isBeingBuilt"] = unit->IsBeingBuilt();
-        u["isCloaked"] = unit->IsCloaked();
-        u["isParalyzed"] = unit->IsParalyzed();
-        obs["units"][std::to_string(unit->GetUnitId())] = u;
+        
+        auto [unitId, u] = ParseUnit(unit);
+        obs["units"][std::to_string(unitId)] = u;
     }
 
     // Enemy units
@@ -326,18 +343,8 @@ void CControllerAI::UpdateObservation() {
     for (springai::Unit* unit : enemies) {
         if (!unit) continue;
 
-        json e;
-        springai::AIFloat3 pos = unit->GetPos();
-        e["pos"] = json::array({pos.x, pos.y, pos.z});
-        
-        springai::UnitDef* def = unit->GetDef();
-        if (def) {
-            e["defId"] = def->GetUnitDefId();
-            e["name"] = SafeCString(def->GetName());
-        }
-        e["health"] = unit->GetHealth();
-        
-        obs["enemies"][std::to_string(unit->GetUnitId())] = e;
+        auto [unitId, e] = ParseUnit(unit);
+        obs["enemies"][std::to_string(unitId)] = e;
     }
 
     // Economy

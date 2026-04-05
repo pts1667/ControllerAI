@@ -43,7 +43,8 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     synchronousMode(true),
     setupComplete(true),
     canChooseStartPos(false),
-    frameFinished(true)
+    frameFinished(true),
+    released(false)
 {
     if (callback) {
         game = std::unique_ptr<springai::Game>(callback->GetGame());
@@ -81,11 +82,7 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
 }
 
 CControllerAI::~CControllerAI() {
-    running = false;
-    if (server) {
-        server->Stop();
-    }
-    // unique_ptrs will be destroyed automatically
+    Release(0);
 }
 
 void CControllerAI::CacheStaticData() {
@@ -290,6 +287,22 @@ std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
         while ((i++ < 3)) ret += '=';
     }
     return ret;
+}
+
+void CControllerAI::Release(int /*reason*/) {
+    if (released) {
+        return;
+    }
+
+    released = true;
+    running = false;
+    frameFinished = true;
+    setupComplete = true;
+    eventBuffer = json::array();
+
+    if (server) {
+        server->Stop();
+    }
 }
 
 std::tuple<int, json> CControllerAI::ParseUnit(springai::Unit* unit) {
@@ -615,6 +628,16 @@ json CControllerAI::EventToJson(int topic, const void* data) {
 
 int CControllerAI::HandleEvent(int topic, const void* data) {
     if (!callback || skirmishAIId == -1) return 0;
+
+    if (released && topic != EVENT_RELEASE) {
+        return 0;
+    }
+
+    if (topic == EVENT_RELEASE) {
+        const int reason = data ? static_cast<const SReleaseEvent*>(data)->reason : 0;
+        Release(reason);
+        return 0;
+    }
 
     if (topic == EVENT_INIT) {
         CacheStaticData();

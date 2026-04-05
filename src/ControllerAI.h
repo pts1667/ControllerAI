@@ -49,6 +49,7 @@ private:
     bool setupComplete;
     bool canChooseStartPos;
     bool frameFinished;
+    bool released;
 
     // Helper for event serialization
     json EventToJson(int topic, const void* data);
@@ -57,6 +58,7 @@ private:
     void UpdateObservation();
     void ProcessCommands();
     void WaitForResume();
+    void Release(int reason);
     
     void CacheStaticData();
     std::tuple<int, json> ParseUnit(springai::Unit* unit);

@@ -42,7 +42,7 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     synchronousMode(true),
     setupComplete(true),
     canChooseStartPos(false),
-    gameModeInitialized(false),
+    //gameModeInitialized(false),
     frameFinished(true)
 {
     if (callback) {
@@ -550,11 +550,11 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
         eventBuffer.push_back(ev);
     }
 
-    if (topic == EVENT_UNIT_CREATED && !gameModeInitialized && game && server) {
-        // disable 'GetMode' entirely. Not even sure what it's supposed to do...
-        //server->SetGameMode(game->GetMode());
-        gameModeInitialized = true;
-    }
+    // disable 'GetMode' entirely since it crahes. Not even sure what it's supposed to do...
+    //if (topic == EVENT_UNIT_CREATED && !gameModeInitialized && game && server) {
+    //    server->SetGameMode(game->GetMode());
+    //    gameModeInitialized = true;
+    //}
 
     if (topic == EVENT_UPDATE) {
         const int frame = data ? static_cast<const SUpdateEvent*>(data)->frame : -1;

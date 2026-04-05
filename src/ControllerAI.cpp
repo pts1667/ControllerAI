@@ -1,6 +1,7 @@
 #include "ControllerAI.h"
 #include "ExternalAI/Interface/AISEvents.h"
 #include "ExternalAI/Interface/AISCommands.h"
+#include "ControllerAIServer.h"
 
 #include "Game.h"
 #include "Map.h"
@@ -26,16 +27,22 @@
 #include <cstdint>
 #include <regex>
 #include <sstream>
+#include <utility>
 
 namespace controllerai {
 
 CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     callback(callback),
     skirmishAIId(callback != nullptr ? callback->GetSkirmishAIId() : -1),
+    bindAddress("127.0.0.1"),
+    port(3017),
+    server(nullptr),
+    eventBuffer(json::array()),
     running(true),
     synchronousMode(true),
-    frameFinished(true),
-    eventBuffer(json::array())
+    setupComplete(true),
+    canChooseStartPos(false),
+    frameFinished(true)
 {
     if (callback) {
         game = std::unique_ptr<springai::Game>(callback->GetGame());
@@ -46,10 +53,6 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
         lua = std::unique_ptr<springai::Lua>(callback->GetLua());
         mod = std::unique_ptr<springai::Mod>(callback->GetMod());
     }
-
-    // Load options from engine
-    bindAddress = "0.0.0.0";
-    port = 3017;
 
     if (skirmishAI) {
         springai::OptionValues* options = skirmishAI->GetOptionValues();
@@ -71,111 +74,65 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
         }
     }
 
+    server = std::make_unique<CControllerAIServer>(bindAddress, port);
+
     CacheStaticData();
     UpdateObservation(); // Generate frame -1 observation
 
-    serverThread = std::thread(&CControllerAI::ServerThread, this);
+    server->Start();
 }
 
 CControllerAI::~CControllerAI() {
     running = false;
-    svr.stop();
-    if (serverThread.joinable()) {
-        serverThread.join();
+    if (server) {
+        server->Stop();
     }
     // unique_ptrs will be destroyed automatically
 }
 
-void CControllerAI::ServerThread() {
-    svr.Get("/observation", [this](const httplib::Request&, httplib::Response& res) {
-        std::lock_guard<std::mutex> lock(stateMutex);
-        res.set_content(lastObservation.dump(), "application/json");
-    });
-
-    svr.Get("/metadata", [this](const httplib::Request&, httplib::Response& res) {
-        std::lock_guard<std::mutex> lock(stateMutex);
-        res.set_content(unitDefsCache.dump(), "application/json");
-    });
-
-    svr.Get("/game_info", [this](const httplib::Request&, httplib::Response& res) {
-        std::lock_guard<std::mutex> lock(stateMutex);
-        res.set_content(gameInfoCache.dump(), "application/json");
-    });
-
-    svr.Get("/spawn_boxes", [this](const httplib::Request&, httplib::Response& res) {
-        std::lock_guard<std::mutex> lock(stateMutex);
-        res.set_content(spawnBoxesCache.dump(), "application/json");
-    });
-
-    svr.Get("/map_features", [this](const httplib::Request&, httplib::Response& res) {
-        std::lock_guard<std::mutex> lock(stateMutex);
-        res.set_content(mapFeaturesCache.dump(), "application/json");
-    });
-
-    svr.Get("/heightmap", [this](const httplib::Request&, httplib::Response& res) {
-        std::lock_guard<std::mutex> lock(stateMutex);
-        res.set_content(heightmapCache.dump(), "application/json");
-    });
-
-    svr.Post("/command", [this](const httplib::Request& req, httplib::Response& res) {
-        try {
-            json cmd = json::parse(req.body);
-            {
-                std::lock_guard<std::mutex> lock(commandQueueMutex);
-                commandQueue.push(cmd);
-            }
-            cv.notify_all(); // Wake up engine thread if it's waiting
-            res.set_content("{\"status\": \"queued\"}", "application/json");
-        } catch (const std::exception& e) {
-            res.status = 400;
-            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
-        }
-    });
-
-    svr.listen(bindAddress.c_str(), port);
-}
-
 void CControllerAI::CacheStaticData() {
     if (log) log->DoLog("ControllerAI: CacheStaticData start");
-    if (!callback || !game || !map || !mod) return;
-    std::lock_guard<std::mutex> lock(stateMutex);
+    if (!server) {
+        return;
+    }
 
-    // 1. Game Info
+    json gameInfoCache = json::object();
+    json spawnBoxesCache = json::object();
+    json unitDefsCache = json::object();
+    json mapFeaturesCache = json::object();
+    json heightmapCache = json::object();
+
     if (log) log->DoLog("ControllerAI: Caching game info");
-    gameInfoCache = json::object();
-
     if (mod) {
         gameInfoCache["modName"] = mod->GetHumanName();
-    } else {
+    } else if (log) {
         log->DoLog("ControllerAI: WARNING- no mod ???");
     }
-    
+
     if (map) {
         gameInfoCache["mapName"] = map->GetHumanName();
-    } else {
+    } else if (log) {
         log->DoLog("ControllerAI: WARNING- no map ???");
     }
-    
-    std::string script = "";
+
+    std::string script;
     if (game) {
         gameInfoCache["gameMode"] = game->GetMode();
         gameInfoCache["isPaused"] = game->IsPaused();
 
         script = game->GetSetupScript();
         canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
-        gameInfoCache["canChooseStartPos"] = canChooseStartPos;
         setupComplete = !canChooseStartPos;
-    } else {
+    } else if (log) {
         log->DoLog("ControllerAI: WARNING- no game ???");
     }
+    gameInfoCache["canChooseStartPos"] = canChooseStartPos;
 
-    // 2. Spawn Boxes
-    if (map && script != "") {
+    if (map && !script.empty()) {
         if (log) log->DoLog("ControllerAI: Caching spawn boxes");
-        spawnBoxesCache = json::object();
         int width_elmos = map->GetWidth() * 8;
         int height_elmos = map->GetHeight() * 8;
-        
+
         std::regex zkPattern("\\[(\\d+)\\]\\s*=\\s*\\{\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)\\s*\\}");
         auto zk_it = std::sregex_iterator(script.begin(), script.end(), zkPattern);
         auto zk_end = std::sregex_iterator();
@@ -189,6 +146,7 @@ void CControllerAI::CacheStaticData() {
             box["bottom"] = std::stof(match[5]) * height_elmos;
             spawnBoxesCache[std::to_string(allyId)] = box;
         }
+
         if (spawnBoxesCache.empty()) {
             std::regex stdPattern("allyteam(\\d+)\\s*\\{[^}]*rect\\s*=\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)");
             auto std_it = std::sregex_iterator(script.begin(), script.end(), stdPattern);
@@ -204,66 +162,64 @@ void CControllerAI::CacheStaticData() {
                 spawnBoxesCache[std::to_string(allyId)] = box;
             }
         }
-    } else {
+    } else if (log) {
         log->DoLog("ControllerAI: WARNING- can't populate spawn boxes, either empty map or empty script");
     }
 
-    // 3. Unit Metadata
     if (log) log->DoLog("ControllerAI: Caching unit metadata");
-    unitDefsCache = json::object();
-    std::vector<springai::UnitDef*> defs = callback->GetUnitDefs();
-    for (springai::UnitDef* def : defs) {
-        if (!def) continue;
+    if (callback) {
+        std::vector<springai::UnitDef*> defs = callback->GetUnitDefs();
+        for (springai::UnitDef* def : defs) {
+            if (!def) continue;
 
-        json d;
-        d["name"] = def->GetName();
-        d["humanName"] = def->GetHumanName();
-        d["buildTime"] = def->GetBuildTime();
-        d["health"] = def->GetHealth();
-        d["speed"] = def->GetSpeed();
-        d["range"] = def->GetMaxWeaponRange();
-        unitDefsCache[std::to_string(def->GetUnitDefId())] = d;
+            json d;
+            d["name"] = def->GetName();
+            d["humanName"] = def->GetHumanName();
+            d["buildTime"] = def->GetBuildTime();
+            d["health"] = def->GetHealth();
+            d["speed"] = def->GetSpeed();
+            d["range"] = def->GetMaxWeaponRange();
+            unitDefsCache[std::to_string(def->GetUnitDefId())] = d;
+        }
     }
 
-    // 4. Map Features & Resources
     if (log) log->DoLog("ControllerAI: Caching map features");
-    mapFeaturesCache = json::object();
     mapFeaturesCache["spots"] = json::array();
-    std::vector<springai::Resource*> resources = callback->GetResources();
-    for (springai::Resource* res_ptr : resources) {
-        if (!res_ptr) continue;
-
-        std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
-        for (const auto& spot_pos : spots) {
-            json s;
-            s["resource"] = res_ptr->GetName();
-            s["pos"] = json::array({spot_pos.x, spot_pos.y, spot_pos.z});
-            mapFeaturesCache["spots"].push_back(s);
-        }
-    }
-
     mapFeaturesCache["features"] = json::array();
-    std::vector<springai::Feature*> features = callback->GetFeatures();
-    for (springai::Feature* f : features) {
-        if (!f) continue;
+    if (callback && map) {
+        std::vector<springai::Resource*> resources = callback->GetResources();
+        for (springai::Resource* res_ptr : resources) {
+            if (!res_ptr) continue;
 
-        json fj;
-        fj["id"] = f->GetFeatureId();
-        springai::AIFloat3 f_pos = f->GetPosition();
-        fj["pos"] = json::array({f_pos.x, f_pos.y, f_pos.z});
-        fj["health"] = f->GetHealth();
-        springai::FeatureDef* fdef = f->GetDef();
-        if (fdef) {
-            fj["name"] = fdef->GetName();
+            std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
+            for (const auto& spot_pos : spots) {
+                json s;
+                s["resource"] = res_ptr->GetName();
+                s["pos"] = json::array({spot_pos.x, spot_pos.y, spot_pos.z});
+                mapFeaturesCache["spots"].push_back(s);
+            }
         }
-        mapFeaturesCache["features"].push_back(fj);
+
+        std::vector<springai::Feature*> features = callback->GetFeatures();
+        for (springai::Feature* f : features) {
+            if (!f) continue;
+
+            json fj;
+            fj["id"] = f->GetFeatureId();
+            springai::AIFloat3 f_pos = f->GetPosition();
+            fj["pos"] = json::array({f_pos.x, f_pos.y, f_pos.z});
+            fj["health"] = f->GetHealth();
+            springai::FeatureDef* fdef = f->GetDef();
+            if (fdef) {
+                fj["name"] = fdef->GetName();
+            }
+            mapFeaturesCache["features"].push_back(fj);
+        }
     }
 
-    // 5. Heightmap
     if (map) {
         if (log) log->DoLog("ControllerAI: Caching heightmap");
 
-        heightmapCache = json::object();
         int h_width = map->GetWidth();
         int h_height = map->GetHeight();
         std::vector<float> heights = map->GetHeightMap();
@@ -273,22 +229,28 @@ void CControllerAI::CacheStaticData() {
             reinterpret_cast<const unsigned char*>(heights.data()),
             heights.size() * sizeof(float)
         );
-    } else {
+    } else if (log) {
         log->DoLog("ControllerAI: WARNING- no map, can't produce heightmap");
     }
+
+    server->PublishGameInfo(std::move(gameInfoCache));
+    server->PublishSpawnBoxes(std::move(spawnBoxesCache));
+    server->PublishMetadata(std::move(unitDefsCache));
+    server->PublishMapFeatures(std::move(mapFeaturesCache));
+    server->PublishHeightmap(std::move(heightmapCache));
 
     if (log) log->DoLog("ControllerAI: CacheStaticData end");
 }
 
 bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
-    if (!game || !lua) {
-        if (log) log->DoLog("ControllerAI: WARNING in IsSpawnPosValid- game or lua is null");
+    if (!game || !lua || !server) {
+        if (log) log->DoLog("ControllerAI: WARNING in IsSpawnPosValid- game, lua, or server is null");
         return false;
     }
     int myAlly = game->GetMyAllyTeam();
     
     std::string allyStr = std::to_string(myAlly);
-    std::lock_guard<std::mutex> lock(stateMutex);
+    json spawnBoxesCache = server->GetSpawnBoxes();
     if (spawnBoxesCache.contains(allyStr)) {
         auto box = spawnBoxesCache[allyStr];
         if (pos.x < box["left"] || pos.x > box["right"] || pos.z < box["top"] || pos.z > box["bottom"]) {
@@ -344,8 +306,8 @@ std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
 
 void CControllerAI::UpdateObservation() {
     if (log) log->DoLog("ControllerAI: UpdateObservation start");
-    if (!callback || !game || !economy) {
-        log->DoLog("ControllerAI: WARNING in UpdateObservation- failed null check");
+    if (!callback || !game || !economy || !server) {
+        if (log) log->DoLog("ControllerAI: WARNING in UpdateObservation- failed null check");
         return;
     }
 
@@ -384,6 +346,8 @@ void CControllerAI::UpdateObservation() {
     obs["enemies"] = json::object();
     std::vector<springai::Unit*> enemies = callback->GetEnemyUnits();
     for (springai::Unit* unit : enemies) {
+        if (!unit) continue;
+
         json e;
         springai::AIFloat3 pos = unit->GetPos();
         e["pos"] = json::array({pos.x, pos.y, pos.z});
@@ -402,6 +366,7 @@ void CControllerAI::UpdateObservation() {
     obs["economy"] = json::object();
     for (springai::Resource* res_ptr : resources) {
         if (!res_ptr) continue;
+        
         json r;
         r["current"] = economy->GetCurrent(res_ptr);
         r["storage"] = economy->GetStorage(res_ptr);
@@ -410,19 +375,20 @@ void CControllerAI::UpdateObservation() {
         obs["economy"][res_ptr->GetName()] = r;
     }
 
-    std::lock_guard<std::mutex> lock(stateMutex);
     obs["events"] = eventBuffer;
     eventBuffer = json::array(); // Clear buffer after poll
-    lastObservation = obs;
+    server->PublishObservation(std::move(obs));
     if (log) log->DoLog("ControllerAI: UpdateObservation end");
 }
 
 void CControllerAI::ProcessCommands() {
     if (log) log->DoLog("ControllerAI: ProcessCommands start");
-    std::lock_guard<std::mutex> lock(commandQueueMutex);
-    while (!commandQueue.empty()) {
-        json cmd = commandQueue.front();
-        commandQueue.pop();
+    if (!server) {
+        return;
+    }
+
+    std::vector<json> commands = server->DrainCommands();
+    for (json& cmd : commands) {
 
         try {
             std::string type = cmd["type"];
@@ -477,7 +443,7 @@ void CControllerAI::ProcessCommands() {
             } else if (type == "reclaim" && unit) {
                 if (cmd.contains("targetId")) {
                     springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, cmd["targetId"]);
-                    if (target) unit->ReclaimUnit(target, opts, 100000);;
+                    if (target) unit->ReclaimUnit(target, opts, 100000);
                 } else if (cmd.contains("featureId")) {
                     springai::Feature* feature = springai::WrappFeature::GetInstance(skirmishAIId, cmd["featureId"]);
                     if (feature) unit->ReclaimFeature(feature, opts, 100000);
@@ -501,9 +467,7 @@ void CControllerAI::ProcessCommands() {
                 if (IsSpawnPosValid(pos)) {
                     if (game) game->SendStartPosition(ready, pos);
                     if (ready) {
-                        std::lock_guard<std::mutex> lock(cvMutex);
                         setupComplete = true;
-                        cv.notify_all();
                     }
                 } else {
                     // Logic to inform user could be via text message or a status code if we wait
@@ -527,13 +491,38 @@ void CControllerAI::ProcessCommands() {
                     lua->CallRules(data.c_str(), (int)data.size());
                 }
             } else if (type == "finish_frame") {
-                std::lock_guard<std::mutex> lock(cvMutex);
                 frameFinished = true;
-                cv.notify_one();
             }
         } catch (...) {}
     }
     if (log) log->DoLog("ControllerAI: ProcessCommands end");
+}
+
+void CControllerAI::WaitForResume() {
+    if (!server) {
+        return;
+    }
+
+    while (running) {
+        if (game && canChooseStartPos && !setupComplete) {
+            if (log) log->DoLog("ControllerAI: Waiting for start position");
+            if (!server->WaitForCommands()) {
+                return;
+            }
+            ProcessCommands();
+            continue;
+        }
+
+        if (!synchronousMode || !game || game->GetCurrentFrame() < 0 || frameFinished) {
+            return;
+        }
+
+        if (log) log->DoLog("ControllerAI: Waiting for finish_frame");
+        if (!server->WaitForCommands()) {
+            return;
+        }
+        ProcessCommands();
+    }
 }
 
 json CControllerAI::EventToJson(int topic, const void* data) {
@@ -602,16 +591,18 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     // Capture events
     json ev = EventToJson(topic, data);
     if (!ev.is_null() && ev.contains("topic")) {
-        std::lock_guard<std::mutex> lock(stateMutex);
         eventBuffer.push_back(ev);
     }
 
-    UpdateObservation();
-    ProcessCommands();
+    if (topic == EVENT_UPDATE) {
+        const int frame = data ? static_cast<const SUpdateEvent*>(data)->frame : -1;
+        if (frame >= 0) {
+            frameFinished = false;
+        }
 
-    // ... blocking logic ...
-    if (game && game->GetCurrentFrame() < 0 && !setupComplete) {
-        // ...
+        ProcessCommands();
+        UpdateObservation();
+        WaitForResume();
     }
 
     if (log) {

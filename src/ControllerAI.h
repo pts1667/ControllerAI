@@ -2,8 +2,9 @@
 #define _CPPTESTAI_CPPTESTAI_H
 
 #include "OOAICallback.h"
-#include "httplib.h"
 #include "nlohmann/json.hpp"
+
+#include "ControllerAIServer.h"
 
 #include "Game.h"
 #include "Map.h"
@@ -13,15 +14,9 @@
 #include "Lua.h"
 #include "Mod.h"
 
-#include <thread>
-#include <mutex>
-#include <vector>
-#include <string>
-#include <queue>
-#include <map>
-#include <atomic>
-#include <condition_variable>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace controllerai {
 
@@ -42,43 +37,26 @@ private:
     std::unique_ptr<springai::Mod> mod;
 
     // HTTP Server
-    httplib::Server svr;
-    std::thread serverThread;
     std::string bindAddress;
     int port;
-    
+    std::unique_ptr<CControllerAIServer> server;
+
     // State management
-    std::mutex stateMutex;
-    json lastObservation;
     json eventBuffer; // Stores events since last observation poll
     bool running;
     bool synchronousMode;
     bool setupComplete;
     bool canChooseStartPos;
-
-    // Synchronous Mode control
-    std::condition_variable cv;
-    std::mutex cvMutex;
     bool frameFinished;
-
-    // Command Queue
-    std::mutex commandQueueMutex;
-    std::queue<json> commandQueue;
 
     // Helper for event serialization
     json EventToJson(int topic, const void* data);
     
     // Internal processing
-    void ServerThread();
     void UpdateObservation();
     void ProcessCommands();
+    void WaitForResume();
     
-    // Metadata and static-ish caches
-    json unitDefsCache;
-    json gameInfoCache;
-    json spawnBoxesCache;
-    json mapFeaturesCache;
-    json heightmapCache;
     void CacheStaticData();
 
     bool IsSpawnPosValid(const springai::AIFloat3& pos);

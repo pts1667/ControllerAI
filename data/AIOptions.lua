@@ -20,7 +20,7 @@ local options = {
 	{
 		key     = 'port',
 		name    = 'Server Port',
-		desc    = 'The port the HTTP server will listen on.',
+		desc    = 'The port the HTTP/WebSocket server will listen on.',
 		type    = 'number',
 		section = 'server_section',
 		def     = 3017,

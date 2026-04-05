@@ -1,11 +1,11 @@
 # ControllerAI: External AI Communication Layer
 
-ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that acts as a bridge between the game engine and external services. It exposes the game state via a RESTful API and accepts commands in JSON format, allowing you to write RTS AIs in any language (Python, Node.js, Rust, etc.) without compiling C++ code.
+ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that acts as a bridge between the game engine and external services. It exposes the game state via a RESTful API, streams observations over WebSocket, and accepts commands in JSON format, allowing you to write RTS AIs in any language (Python, Node.js, Rust, etc.) without compiling C++ code.
 
 ## How it Works
 
-1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. It starts a background HTTP server on `localhost:3017`.
-2.  **Observation**: Every game frame (and during the pre-match phase), the AI updates its internal state. External services poll this state via `/observation`.
+1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. It starts a background HTTP/WebSocket server on `localhost:3017`.
+2.  **Observation**: Every game frame (and during the pre-match phase), the AI updates its internal state. External services can either poll `/observation` or use `ws://localhost:3017/ws` as a bidirectional frame loop.
 3.  **Game Info**: External services can query `/game_info` during startup to discover map metadata, game mode, pause state, and whether the AI is still allowed to choose its start position.
 4.  **Commands**: External services POST JSON commands to `/command`. These are executed on the next engine update.
 5. **Synchronous Control**: By default, the engine blocks the main thread during the setup phase (frame -1) until a start position is chosen. Once the game starts, it pauses at the end of every frame until you send a `finish_frame` command.
@@ -21,10 +21,12 @@ You can configure the binding address and port through the engine's AI options (
 
 ## API Endpoints
 
-The server runs on `http://localhost:3017`.
+The server runs on `http://localhost:3017` and `ws://localhost:3017/ws`.
 
 ### 1. `GET /observation`
 Returns the current snapshot of the game state and events since the last poll.
+
+For simple integrations, polling this endpoint is still supported and unchanged.
 
 **Example Response:**
 ```json
@@ -56,6 +58,35 @@ Returns the current snapshot of the game state and events since the last poll.
 ### 2. `GET /metadata`
 Returns static data about all unit types available in the current game/mod.
 
+### 1b. `GET /ws`
+Runs the full synchronous observation/command loop on a single WebSocket connection.
+
+- Sends the latest snapshot immediately after connect if one is already available.
+- Sends each subsequent observation when the engine publishes the next frame.
+- Accepts the same JSON command payloads as `POST /command`.
+- Supports either one command per message or an array of command objects in a single message.
+- In synchronous mode, send commands for the current frame and end the batch with `finish_frame`. The next observation is sent after the engine resumes and publishes it.
+
+**JavaScript example:**
+```javascript
+const ws = new WebSocket("ws://127.0.0.1:3017/ws");
+
+ws.onmessage = (event) => {
+  const obs = JSON.parse(event.data);
+  console.log("frame", obs.frame);
+
+  for (const unitId of Object.keys(obs.units)) {
+    ws.send(JSON.stringify({
+      type: "move",
+      unitId: Number(unitId),
+      pos: [1000, 0, 1000]
+    }));
+  }
+
+  ws.send(JSON.stringify({ type: "finish_frame" }));
+};
+```
+
 ### 3. `GET /spawn_boxes`
 Returns the defined start boxes for each ally team.
 - **Keys**: Ally Team IDs.
@@ -78,7 +109,9 @@ Typical startup flow:
   "mapName": "TitanDuel 2.2",
   "gameMode": 0,
   "isPaused": true,
-  "canChooseStartPos": true
+  "canChooseStartPos": true,
+  "supportsWebsocketObservation": true,
+  "websocketObservationPath": "/ws"
 }
 ```
 
@@ -90,6 +123,8 @@ Returns the dynamic heightmap as a Base64 encoded string of `float32` values.
 
 ### 7. `POST /command`
 Sends a command to the engine. Standard fields: `unitId`, `type`, `pos`, `targetId`, `options`.
+
+This endpoint remains available for simple integrations or mixed HTTP/WebSocket clients. WebSocket clients can send the same command JSON messages on `/ws` instead.
 
 **Match Start Command:**
 - `set_start_pos`: Set your initial spawn point. Requires `pos`.
@@ -173,3 +208,5 @@ if __name__ == "__main__":
 
 ## Performance Note
 ControllerAI defaults to Synchronous Mode (`sync=true`) to ensure external services never miss a frame. For non-blocking "real-time" behavior, set `sync = false` in `AIOptions.lua`.
+
+When using `/ws`, the expected loop is: receive an observation, send one or more commands for that frame, send `finish_frame`, then wait for the next observation.

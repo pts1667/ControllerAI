@@ -116,6 +116,8 @@ void CControllerAI::CacheStaticData() {
         setupComplete = !canChooseStartPos;
     }
     gameInfoCache["canChooseStartPos"] = canChooseStartPos;
+    gameInfoCache["supportsWebsocketObservation"] = true;
+    gameInfoCache["websocketObservationPath"] = "/ws";
 
     if (map && !script.empty()) {
         int width_elmos = map->GetWidth() * 8;

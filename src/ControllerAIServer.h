@@ -4,6 +4,7 @@
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 
+#include <memory>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -37,8 +38,19 @@ public:
     bool WaitForCommands();
 
 private:
+    struct WebSocketSession {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::queue<std::string> outgoingMessages;
+        bool closed = false;
+    };
+
     void ConfigureRoutes();
     void Run();
+    void EnqueueCommand(json command);
+    void EnqueueWebSocketObservation(const std::string& observation);
+    void EnqueueWebSocketCommands(const std::string& message);
+    void RemoveWebSocketSession(const std::shared_ptr<WebSocketSession>& session);
 
     std::string bindAddress;
     int port;
@@ -49,11 +61,15 @@ private:
 
     mutable std::mutex snapshotMutex;
     json lastObservation;
+    std::string lastObservationSerialized;
     json unitDefsCache;
     json gameInfoCache;
     json spawnBoxesCache;
     json mapFeaturesCache;
     json heightmapCache;
+
+    std::mutex websocketMutex;
+    std::vector<std::shared_ptr<WebSocketSession>> websocketSessions;
 
     std::mutex commandMutex;
     std::condition_variable commandCv;

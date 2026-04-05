@@ -30,7 +30,7 @@ local infos = {
 	},
 	{
 		key    = 'description',
-		value  = 'Exposes game state via HTTP server (port 3017) and accepts JSON commands from external services.',
+		value  = 'Exposes game state via HTTP/WebSocket server (port 3017) and accepts JSON commands from external services.',
 		desc   = 'tooltip.',
 	},
 	{

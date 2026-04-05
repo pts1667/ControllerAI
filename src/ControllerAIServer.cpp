@@ -1,5 +1,7 @@
 #include "ControllerAIServer.h"
 
+#include <algorithm>
+#include <chrono>
 #include <utility>
 
 namespace controllerai {
@@ -9,6 +11,7 @@ CControllerAIServer::CControllerAIServer(std::string bindAddress, int port) :
     port(port),
     running(false),
     lastObservation(json::object()),
+    lastObservationSerialized(),
     unitDefsCache(json::object()),
     gameInfoCache(json::object()),
     spawnBoxesCache(json::object()),
@@ -34,6 +37,19 @@ void CControllerAIServer::Start() {
 void CControllerAIServer::Stop() {
     bool wasRunning = running.exchange(false);
     commandCv.notify_all();
+
+    std::vector<std::shared_ptr<WebSocketSession>> sessions;
+    {
+        std::lock_guard<std::mutex> lock(websocketMutex);
+        sessions = websocketSessions;
+    }
+
+    for (const auto& session : sessions) {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        session->closed = true;
+        session->cv.notify_all();
+    }
+
     if (wasRunning) {
         svr.stop();
     }
@@ -43,8 +59,15 @@ void CControllerAIServer::Stop() {
 }
 
 void CControllerAIServer::PublishObservation(json observation) {
-    std::lock_guard<std::mutex> lock(snapshotMutex);
-    lastObservation = std::move(observation);
+    std::string serialized;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        lastObservation = std::move(observation);
+        lastObservationSerialized = lastObservation.dump();
+        serialized = lastObservationSerialized;
+    }
+
+    EnqueueWebSocketObservation(serialized);
 }
 
 void CControllerAIServer::PublishMetadata(json metadata) {
@@ -96,10 +119,136 @@ bool CControllerAIServer::WaitForCommands() {
     return running.load() || !commandQueue.empty();
 }
 
+void CControllerAIServer::EnqueueCommand(json command) {
+    {
+        std::lock_guard<std::mutex> lock(commandMutex);
+        commandQueue.push(std::move(command));
+    }
+    commandCv.notify_one();
+}
+
+void CControllerAIServer::EnqueueWebSocketObservation(const std::string& observation) {
+    std::vector<std::shared_ptr<WebSocketSession>> sessions;
+    {
+        std::lock_guard<std::mutex> lock(websocketMutex);
+        sessions = websocketSessions;
+    }
+
+    for (const auto& session : sessions) {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        if (session->closed) {
+            continue;
+        }
+
+        session->outgoingMessages.push(observation);
+        session->cv.notify_one();
+    }
+}
+
+void CControllerAIServer::EnqueueWebSocketCommands(const std::string& message) {
+    try {
+        json payload = json::parse(message);
+        if (payload.is_array()) {
+            for (auto& command : payload) {
+                if (command.is_object()) {
+                    EnqueueCommand(std::move(command));
+                }
+            }
+            return;
+        }
+
+        if (payload.is_object()) {
+            EnqueueCommand(std::move(payload));
+        }
+    } catch (...) {
+    }
+}
+
+void CControllerAIServer::RemoveWebSocketSession(const std::shared_ptr<WebSocketSession>& session) {
+    std::lock_guard<std::mutex> lock(websocketMutex);
+    websocketSessions.erase(
+        std::remove(websocketSessions.begin(), websocketSessions.end(), session),
+        websocketSessions.end()
+    );
+}
+
 void CControllerAIServer::ConfigureRoutes() {
+    svr.set_websocket_ping_interval(std::chrono::seconds(10));
+
+    svr.WebSocket("/ws", [this](const httplib::Request&, httplib::ws::WebSocket& ws) {
+        auto session = std::make_shared<WebSocketSession>();
+
+        {
+            std::lock_guard<std::mutex> lock(websocketMutex);
+            websocketSessions.push_back(session);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(snapshotMutex);
+            if (!lastObservationSerialized.empty()) {
+                session->outgoingMessages.push(lastObservationSerialized);
+            }
+        }
+        session->cv.notify_one();
+
+        std::thread sender([session, &ws]() {
+            while (true) {
+                std::string payload;
+                {
+                    std::unique_lock<std::mutex> lock(session->mutex);
+                    session->cv.wait(lock, [&]() {
+                        return session->closed || !session->outgoingMessages.empty();
+                    });
+
+                    if (session->closed) {
+                        break;
+                    }
+
+                    payload = std::move(session->outgoingMessages.front());
+                    session->outgoingMessages.pop();
+                }
+
+                if (!ws.send(payload)) {
+                    ws.close();
+                    break;
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(session->mutex);
+                session->closed = true;
+            }
+            session->cv.notify_all();
+        });
+
+        std::string message;
+        while (running.load() && ws.is_open()) {
+            auto readResult = ws.read(message);
+            if (!readResult) {
+                break;
+            }
+
+            if (readResult == httplib::ws::Text) {
+                EnqueueWebSocketCommands(message);
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(session->mutex);
+            session->closed = true;
+        }
+        session->cv.notify_all();
+
+        if (sender.joinable()) {
+            sender.join();
+        }
+
+        RemoveWebSocketSession(session);
+    });
+
     svr.Get("/observation", [this](const httplib::Request&, httplib::Response& res) {
         std::lock_guard<std::mutex> lock(snapshotMutex);
-        res.set_content(lastObservation.dump(), "application/json");
+        res.set_content(lastObservationSerialized.empty() ? lastObservation.dump() : lastObservationSerialized, "application/json");
     });
 
     svr.Get("/metadata", [this](const httplib::Request&, httplib::Response& res) {
@@ -130,11 +279,7 @@ void CControllerAIServer::ConfigureRoutes() {
     svr.Post("/command", [this](const httplib::Request& req, httplib::Response& res) {
         try {
             json cmd = json::parse(req.body);
-            {
-                std::lock_guard<std::mutex> lock(commandMutex);
-                commandQueue.push(std::move(cmd));
-            }
-            commandCv.notify_one();
+            EnqueueCommand(std::move(cmd));
             res.set_content("{\"status\": \"queued\"}", "application/json");
         } catch (const std::exception& e) {
             res.status = 400;

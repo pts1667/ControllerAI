@@ -90,65 +90,83 @@ Server-to-client WebSocket messages are wrapped as:
 
 The `type` field will be one of `game_info`, `spawn_boxes`, `metadata`, `map_features`, `heightmap`, `observation`, or `error`.
 
-**JavaScript example:**
-```javascript
-const ws = new WebSocket("ws://127.0.0.1:3017/ws");
+**Python WebSocket example:**
+```python
+import json
 
-const state = {
-  gameInfo: null,
-  spawnBoxes: null,
-  metadata: null,
-  mapFeatures: null,
-  heightmap: null,
-};
+from websocket import create_connection
 
-ws.onmessage = (event) => {
-  const message = JSON.parse(event.data);
+WS_URL = "ws://127.0.0.1:3017/ws"
 
-  if (message.type === "game_info") {
-    state.gameInfo = message.data;
-    console.log("map size", state.gameInfo.mapWidthElmos, state.gameInfo.mapHeightElmos);
-    return;
-  }
 
-  if (message.type === "spawn_boxes") {
-    state.spawnBoxes = message.data;
-    return;
-  }
+def send(ws, payload):
+    ws.send(json.dumps(payload))
 
-  if (message.type === "metadata") {
-    state.metadata = message.data;
-    return;
-  }
 
-  if (message.type === "map_features") {
-    state.mapFeatures = message.data;
-    return;
-  }
+def main():
+    ws = create_connection(WS_URL)
+    state = {
+        "game_info": None,
+        "spawn_boxes": None,
+        "metadata": None,
+        "map_features": None,
+        "heightmap": None,
+        "startup_complete": False,
+    }
 
-  if (message.type === "heightmap") {
-    state.heightmap = message.data;
-    return;
-  }
+    try:
+        while True:
+            message = json.loads(ws.recv())
+            msg_type = message["type"]
+            data = message["data"]
 
-  if (message.type !== "observation") {
-    console.error(message);
-    return;
-  }
+            if msg_type in {"game_info", "spawn_boxes", "metadata", "map_features", "heightmap"}:
+                state[msg_type] = data
+                continue
 
-  const obs = message.data;
-  console.log("frame", obs.frame);
+            if msg_type == "error":
+                print("Server error:", data)
+                continue
 
-  for (const unitId of Object.keys(obs.units)) {
-    ws.send(JSON.stringify({
-      type: "move",
-      unitId: Number(unitId),
-      pos: [1000, 0, 1000]
-    }));
-  }
+            if msg_type != "observation":
+                continue
 
-  ws.send(JSON.stringify({ type: "finish_frame" }));
-};
+            frame = data["frame"]
+            print("frame", frame)
+
+            if not state["startup_complete"] and frame < 0:
+                send(ws, {"type": "set_commander", "name": "dyntrainer_strike_base"})
+
+                game_info = state["game_info"] or {}
+                if game_info.get("canChooseStartPos"):
+                    boxes = state["spawn_boxes"] or {}
+                    ally_box = boxes.get(str(data["allyTeamId"]))
+                    if ally_box:
+                        cx = (ally_box["left"] + ally_box["right"]) / 2
+                        cz = (ally_box["top"] + ally_box["bottom"]) / 2
+                        send(ws, {"type": "set_start_pos", "pos": [cx, 0, cz]})
+                    else:
+                        raise RuntimeError("Missing spawn box for ally team")
+                else:
+                    send(ws, {"type": "finish_frame"})
+
+                state["startup_complete"] = True
+                continue
+
+            for unit_id in data["units"]:
+                send(ws, {
+                    "type": "move",
+                    "unitId": int(unit_id),
+                    "pos": [1000, 0, 1000],
+                })
+
+            send(ws, {"type": "finish_frame"})
+    finally:
+        ws.close()
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 ### 3. `GET /spawn_boxes`
@@ -162,11 +180,10 @@ Returns startup metadata for the current match.
 Typical startup flow:
 1. Poll `/observation` or connect to `/ws` until the AI is initialized.
 2. Read `/game_info` to check whether startup setup is still available.
-3. If the game allows it, send `set_commander` before choosing a start position.
-4. Send any startup commands you need, such as `set_commander` or `set_side`.
-5. If `canChooseStartPos` is true, read `/spawn_boxes` and send `set_start_pos`. **This unblocks the engine setup phase.**
-6. If no start position choice is required, send `finish_frame` to end the startup command loop.
-7. Once the match reaches frame 0, the engine will block again (if `sync=true`). Call `finish_frame` to proceed with the game loop.
+3. Send any startup commands you need, such as `set_commander` or `set_side`.
+4. If `canChooseStartPos` is true, read `/spawn_boxes` and send `set_start_pos`. **This unblocks the engine setup phase.**
+5. If no start position choice is required, send `finish_frame` to end the startup command loop.
+6. Once the match reaches frame 0, the engine will block again (if `sync=true`). Call `finish_frame` to proceed with the game loop.
 
 **Example Response:**
 ```json
@@ -212,7 +229,7 @@ This endpoint remains available for simple integrations or mixed HTTP/WebSocket 
 
 ## Complete Match Lifecycle (Python Example)
 
-This example shows the HTTP fallback flow. With `/ws`, you can connect once, receive the startup data over WebSocket, choose a start position, and run the frame loop without touching the REST endpoints.
+This example shows the HTTP fallback flow. The README examples use Python consistently; for WebSocket transport, see the Python example above.
 
 ```python
 import requests
@@ -220,45 +237,64 @@ import time
 
 URL = "http://localhost:3017"
 
+
+def post_command(payload):
+  requests.post(f"{URL}/command", json=payload).raise_for_status()
+
+
 def main():
     print("Waiting for match initialization...")
     
     # 1. Initialization Phase
     while True:
         try:
-            obs = requests.get(f"{URL}/observation").json()
+      obs = requests.get(f"{URL}/observation")
+      obs.raise_for_status()
+      obs = obs.json()
             break
-        except:
+    except requests.RequestException:
             time.sleep(0.5)
     
     print(f"Match Loaded. My AllyTeam: {obs['allyTeamId']}")
 
     # 2. Match Start: Read startup metadata and choose setup
-    info = requests.get(f"{URL}/game_info").json()
+  info = requests.get(f"{URL}/game_info")
+  info.raise_for_status()
+  info = info.json()
     print(f"Map: {info['mapName']} | Mode: {info['gameMode']} | CanChooseStartPos: {info['canChooseStartPos']}")
 
-    boxes = requests.get(f"{URL}/spawn_boxes").json()
-    my_box = boxes.get(str(obs['allyTeamId']))
-    
-    if my_box:
-        # Pick center of your start box
-        cx = (my_box['left'] + my_box['right']) / 2
-        cz = (my_box['top'] + my_box['bottom']) / 2
-        print(f"Setting start position: {cx}, {cz}")
-        requests.post(f"{URL}/command", json={
-            "type": "set_start_pos",
-            "pos": [cx, 0, cz]
-        })
+  # Startup commands can be sent before the first frame update.
+  post_command({
+    "type": "set_commander",
+    "name": "dyntrainer_strike_base"
+  })
 
-    # Commander selection can be sent during startup as well.
-    requests.post(f"{URL}/command", json={
-        "type": "set_commander",
-        "name": "dyntrainer_strike_base"
-    })
+  if info["canChooseStartPos"]:
+    boxes = requests.get(f"{URL}/spawn_boxes")
+    boxes.raise_for_status()
+    boxes = boxes.json()
+    my_box = boxes.get(str(obs['allyTeamId']))
+
+    if my_box:
+      cx = (my_box['left'] + my_box['right']) / 2
+      cz = (my_box['top'] + my_box['bottom']) / 2
+      print(f"Setting start position: {cx}, {cz}")
+      post_command({
+        "type": "set_start_pos",
+        "pos": [cx, 0, cz]
+      })
+    else:
+      raise RuntimeError("Missing spawn box for ally team")
+  else:
+    post_command({
+      "type": "finish_frame"
+        })
     
     # 3. Game Loop (Synchronous)
     while True:
-        obs = requests.get(f"{URL}/observation").json()
+    obs = requests.get(f"{URL}/observation")
+    obs.raise_for_status()
+    obs = obs.json()
         frame = obs['frame']
         
         # --- YOUR AI LOGIC HERE ---
@@ -267,12 +303,12 @@ def main():
 
         # Move units if any exist
         for uid in obs['units']:
-            requests.post(f"{URL}/command", json={
+      post_command({
                 "type": "move", "unitId": int(uid), "pos": [1000, 0, 1000]
             })
         
         # 4. Advance to next frame
-        requests.post(f"{URL}/command", json={"type": "finish_frame"})
+    post_command({"type": "finish_frame"})
 
 if __name__ == "__main__":
     main()

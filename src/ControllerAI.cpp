@@ -118,9 +118,8 @@ void CControllerAI::CacheStaticData() {
 
     std::string script;
     if (game) {
-        if (log) log->DoLog("ControllerAI: Caching game info: reading game mode");
-        gameInfoCache["gameMode"] = game->GetMode();
-        if (log) log->DoLog("ControllerAI: Caching game info: game mode read");
+        if (log) log->DoLog("ControllerAI: Caching game info: skipping game mode read during init");
+        gameInfoCache["gameMode"] = -1;
         if (log) log->DoLog("ControllerAI: Caching game info: reading paused state");
         gameInfoCache["isPaused"] = game->IsPaused();
         if (log) log->DoLog("ControllerAI: Caching game info: paused state read");

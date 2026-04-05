@@ -76,9 +76,6 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
 
     server = std::make_unique<CControllerAIServer>(bindAddress, port);
 
-    CacheStaticData();
-    UpdateObservation(); // Generate frame -1 observation
-
     server->Start();
 }
 
@@ -507,6 +504,7 @@ void CControllerAI::WaitForResume() {
         if (game && canChooseStartPos && !setupComplete) {
             if (log) log->DoLog("ControllerAI: Waiting for start position");
             if (!server->WaitForCommands()) {
+                if (log) log->DoLog("ControllerAI: Warning- Waiting for start position timed out");
                 return;
             }
             ProcessCommands();
@@ -519,6 +517,7 @@ void CControllerAI::WaitForResume() {
 
         if (log) log->DoLog("ControllerAI: Waiting for finish_frame");
         if (!server->WaitForCommands()) {
+            if (log) log->DoLog("ControllerAI: Warning- Waiting for finish_frame timed out");
             return;
         }
         ProcessCommands();
@@ -585,6 +584,7 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     if (topic == EVENT_INIT) {
         if (log) log->DoLog("ControllerAI: EVENT_INIT start");
         CacheStaticData();
+        UpdateObservation();
         if (log) log->DoLog("ControllerAI: EVENT_INIT end");
     }
 

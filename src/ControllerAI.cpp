@@ -142,6 +142,7 @@ void CControllerAI::CacheStaticData() {
     std::lock_guard<std::mutex> lock(stateMutex);
 
     // 1. Game Info
+    if (log) log->DoLog("ControllerAI: Caching game info");
     gameInfoCache = json::object();
     gameInfoCache["modName"] = mod->GetHumanName();
     gameInfoCache["mapName"] = map->GetHumanName();
@@ -153,6 +154,7 @@ void CControllerAI::CacheStaticData() {
     setupComplete = !canChooseStartPos;
 
     // 2. Spawn Boxes
+    if (log) log->DoLog("ControllerAI: Caching spawn boxes");
     spawnBoxesCache = json::object();
     int width_elmos = map->GetWidth() * 8;
     int height_elmos = map->GetHeight() * 8;
@@ -187,6 +189,7 @@ void CControllerAI::CacheStaticData() {
     }
 
     // 3. Unit Metadata
+    if (log) log->DoLog("ControllerAI: Caching unit metadata");
     unitDefsCache = json::object();
     std::vector<springai::UnitDef*> defs = callback->GetUnitDefs();
     for (springai::UnitDef* def : defs) {
@@ -202,6 +205,7 @@ void CControllerAI::CacheStaticData() {
     }
 
     // 4. Map Features & Resources
+    if (log) log->DoLog("ControllerAI: Caching map features");
     mapFeaturesCache = json::object();
     mapFeaturesCache["spots"] = json::array();
     std::vector<springai::Resource*> resources = callback->GetResources();
@@ -233,6 +237,7 @@ void CControllerAI::CacheStaticData() {
     }
 
     // 5. Heightmap
+    if (log) log->DoLog("ControllerAI: Caching heightmap");
     heightmapCache = json::object();
     int h_width = map->GetWidth();
     int h_height = map->GetHeight();
@@ -240,6 +245,7 @@ void CControllerAI::CacheStaticData() {
     heightmapCache["width"] = h_width;
     heightmapCache["height"] = h_height;
     heightmapCache["data_b64"] = Base64Encode(reinterpret_cast<const unsigned char*>(heights.data()), heights.size() * sizeof(float));
+    
     if (log) log->DoLog("ControllerAI: CacheStaticData end");
 }
 

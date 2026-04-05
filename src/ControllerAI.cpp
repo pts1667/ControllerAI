@@ -172,7 +172,8 @@ void CControllerAI::CacheStaticData() {
     if (spawnBoxesCache.empty()) {
         std::regex stdPattern("allyteam(\\d+)\\s*\\{[^}]*rect\\s*=\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)");
         auto std_it = std::sregex_iterator(script.begin(), script.end(), stdPattern);
-        for (std::sregex_iterator i = std_it; i != zk_end; ++i) {
+        auto std_end = std::sregex_iterator();
+        for (std::sregex_iterator i = std_it; i != std_end; ++i) {
             std::smatch match = *i;
             int allyId = std::stoi(match[1]);
             json box;
@@ -300,7 +301,7 @@ std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
 }
 
 void CControllerAI::UpdateObservation() {
-    if (!game || !economy) return;
+    if (!callback || !game || !economy) return;
 
     json obs;
     obs["frame"] = game->GetCurrentFrame();
@@ -357,6 +358,7 @@ void CControllerAI::UpdateObservation() {
     std::vector<springai::Resource*> resources = callback->GetResources();
     obs["economy"] = json::object();
     for (springai::Resource* res_ptr : resources) {
+        if (!res_ptr) continue;
         json r;
         r["current"] = economy->GetCurrent(res_ptr);
         r["storage"] = economy->GetStorage(res_ptr);
@@ -398,12 +400,14 @@ void CControllerAI::ProcessCommands() {
             } else if (type == "build" && unit) {
                 int defId = cmd["defId"];
                 springai::UnitDef* def = springai::WrappUnitDef::GetInstance(skirmishAIId, defId);
-                springai::AIFloat3 pos;
-                pos.x = cmd["pos"][0];
-                pos.y = cmd["pos"][1];
-                pos.z = cmd["pos"][2];
-                unit->Build(def, pos, cmd.value("facing", 0), opts, 100000);
-                delete def;
+                if (def) {
+                    springai::AIFloat3 pos;
+                    pos.x = cmd["pos"][0];
+                    pos.y = cmd["pos"][1];
+                    pos.z = cmd["pos"][2];
+                    unit->Build(def, pos, cmd.value("facing", 0), opts, 100000);
+                    delete def;
+                }
             } else if (type == "stop" && unit) {
                 unit->Stop(opts, 100000);
             } else if (type == "wait" && unit) {
@@ -499,6 +503,7 @@ void CControllerAI::ProcessCommands() {
 json CControllerAI::EventToJson(int topic, const void* data) {
     json e;
     e["topic"] = topic;
+    if (!data) return e;
     switch (topic) {
         case EVENT_INIT: {
             struct SInitEvent* ev = (struct SInitEvent*)data;
@@ -544,8 +549,10 @@ json CControllerAI::EventToJson(int topic, const void* data) {
 }
 
 int CControllerAI::HandleEvent(int topic, const void* data) {
+    if (!callback || skirmishAIId == -1) return 0;
+
     if (topic == EVENT_INIT) {
-        CacheMetadata();
+        CacheStaticData();
     }
 
     // Capture events

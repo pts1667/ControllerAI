@@ -101,13 +101,13 @@ void CControllerAI::CacheStaticData() {
 
     if (log) log->DoLog("ControllerAI: Caching game info");
     if (mod) {
-        gameInfoCache["modName"] = mod->GetHumanName();
+        gameInfoCache["modName"] = SafeCString(mod->GetHumanName());
     } else if (log) {
         log->DoLog("ControllerAI: WARNING- no mod ???");
     }
 
     if (map) {
-        gameInfoCache["mapName"] = map->GetHumanName();
+        gameInfoCache["mapName"] = SafeCString(map->GetHumanName());
     } else if (log) {
         log->DoLog("ControllerAI: WARNING- no map ???");
     }
@@ -117,7 +117,7 @@ void CControllerAI::CacheStaticData() {
         gameInfoCache["gameMode"] = game->GetMode();
         gameInfoCache["isPaused"] = game->IsPaused();
 
-        script = game->GetSetupScript();
+        script = SafeCString(game->GetSetupScript());
         canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
         setupComplete = !canChooseStartPos;
     } else if (log) {
@@ -170,8 +170,8 @@ void CControllerAI::CacheStaticData() {
             if (!def) continue;
 
             json d;
-            d["name"] = def->GetName();
-            d["humanName"] = def->GetHumanName();
+            d["name"] = SafeCString(def->GetName());
+            d["humanName"] = SafeCString(def->GetHumanName());
             d["buildTime"] = def->GetBuildTime();
             d["health"] = def->GetHealth();
             d["speed"] = def->GetSpeed();
@@ -191,7 +191,7 @@ void CControllerAI::CacheStaticData() {
             std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
             for (const auto& spot_pos : spots) {
                 json s;
-                s["resource"] = res_ptr->GetName();
+                s["resource"] = SafeCString(res_ptr->GetName());
                 s["pos"] = json::array({spot_pos.x, spot_pos.y, spot_pos.z});
                 mapFeaturesCache["spots"].push_back(s);
             }
@@ -208,7 +208,7 @@ void CControllerAI::CacheStaticData() {
             fj["health"] = f->GetHealth();
             springai::FeatureDef* fdef = f->GetDef();
             if (fdef) {
-                fj["name"] = fdef->GetName();
+                fj["name"] = SafeCString(fdef->GetName());
             }
             mapFeaturesCache["features"].push_back(fj);
         }
@@ -237,6 +237,10 @@ void CControllerAI::CacheStaticData() {
     server->PublishHeightmap(std::move(heightmapCache));
 
     if (log) log->DoLog("ControllerAI: CacheStaticData end");
+}
+
+std::string CControllerAI::SafeCString(const char* value) const {
+    return value != nullptr ? std::string(value) : std::string();
 }
 
 bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
@@ -369,7 +373,7 @@ void CControllerAI::UpdateObservation() {
         r["storage"] = economy->GetStorage(res_ptr);
         r["income"] = economy->GetIncome(res_ptr);
         r["usage"] = economy->GetUsage(res_ptr);
-        obs["economy"][res_ptr->GetName()] = r;
+        obs["economy"][SafeCString(res_ptr->GetName())] = r;
     }
 
     obs["events"] = eventBuffer;
@@ -564,7 +568,7 @@ json CControllerAI::EventToJson(int topic, const void* data) {
         }
         case EVENT_LUA_MESSAGE: {
             struct SLuaMessageEvent* ev = (struct SLuaMessageEvent*)data;
-            e["data"] = ev->inData;
+            e["data"] = SafeCString(ev->inData);
             break;
         }
         default: break;

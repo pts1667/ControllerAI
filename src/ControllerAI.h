@@ -61,6 +61,7 @@ private:
 
     bool IsSpawnPosValid(const springai::AIFloat3& pos);
 
+    std::string SafeCString(const char* value) const;
     std::string Base64Encode(const unsigned char* data, size_t len);
 
 public:

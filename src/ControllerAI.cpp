@@ -493,6 +493,12 @@ json CControllerAI::EventToJson(int topic, const void* data) {
     json e;
     e["topic"] = topic;
     if (!data) return e;
+
+    auto addDirection = [&e](const float* dir_posF3) {
+        if (!dir_posF3) return;
+        e["dirPos"] = json::array({dir_posF3[0], dir_posF3[1], dir_posF3[2]});
+    };
+
     switch (topic) {
         case EVENT_INIT: {
             struct SInitEvent* ev = (struct SInitEvent*)data;
@@ -522,9 +528,29 @@ json CControllerAI::EventToJson(int topic, const void* data) {
             e["attackerId"] = ev->attacker;
             break;
         }
+        case EVENT_UNIT_DAMAGED: {
+            struct SUnitDamagedEvent* ev = (struct SUnitDamagedEvent*)data;
+            e["unitId"] = ev->unit;
+            e["attackerId"] = ev->attacker;
+            e["damage"] = ev->damage;
+            e["weaponDefId"] = ev->weaponDefId;
+            e["paralyzer"] = ev->paralyzer;
+            addDirection(ev->dir_posF3);
+            break;
+        }
         case EVENT_ENEMY_ENTER_LOS: {
             struct SEnemyEnterLOSEvent* ev = (struct SEnemyEnterLOSEvent*)data;
             e["enemyId"] = ev->enemy;
+            break;
+        }
+        case EVENT_ENEMY_DAMAGED: {
+            struct SEnemyDamagedEvent* ev = (struct SEnemyDamagedEvent*)data;
+            e["enemyId"] = ev->enemy;
+            e["attackerId"] = ev->attacker;
+            e["damage"] = ev->damage;
+            e["weaponDefId"] = ev->weaponDefId;
+            e["paralyzer"] = ev->paralyzer;
+            addDirection(ev->dir_posF3);
             break;
         }
         case EVENT_LUA_MESSAGE: {

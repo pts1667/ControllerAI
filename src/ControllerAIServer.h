@@ -27,7 +27,6 @@ public:
     void PublishObservation(json observation);
     void PublishMetadata(json metadata);
     void PublishGameInfo(json gameInfo);
-    void SetGameMode(int gameMode);
     void PublishSpawnBoxes(json spawnBoxes);
     void PublishMapFeatures(json mapFeatures);
     void PublishHeightmap(json heightmap);

@@ -551,7 +551,8 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     }
 
     if (topic == EVENT_UNIT_CREATED && !gameModeInitialized && game && server) {
-        server->SetGameMode(game->GetMode());
+        // disable 'GetMode' entirely. Not even sure what it's supposed to do...
+        //server->SetGameMode(game->GetMode());
         gameModeInitialized = true;
     }
 

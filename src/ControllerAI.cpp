@@ -137,6 +137,7 @@ void CControllerAI::ServerThread() {
 }
 
 void CControllerAI::CacheStaticData() {
+    if (log) log->DoLog("ControllerAI: CacheStaticData start");
     if (!callback || !game || !map || !mod) return;
     std::lock_guard<std::mutex> lock(stateMutex);
 
@@ -239,6 +240,7 @@ void CControllerAI::CacheStaticData() {
     heightmapCache["width"] = h_width;
     heightmapCache["height"] = h_height;
     heightmapCache["data_b64"] = Base64Encode(reinterpret_cast<const unsigned char*>(heights.data()), heights.size() * sizeof(float));
+    if (log) log->DoLog("ControllerAI: CacheStaticData end");
 }
 
 bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
@@ -301,6 +303,7 @@ std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
 }
 
 void CControllerAI::UpdateObservation() {
+    if (log) log->DoLog("ControllerAI: UpdateObservation start");
     if (!callback || !game || !economy) return;
 
     json obs;
@@ -372,9 +375,11 @@ void CControllerAI::UpdateObservation() {
     obs["events"] = eventBuffer;
     eventBuffer = json::array(); // Clear buffer after poll
     lastObservation = obs;
+    if (log) log->DoLog("ControllerAI: UpdateObservation end");
 }
 
 void CControllerAI::ProcessCommands() {
+    if (log) log->DoLog("ControllerAI: ProcessCommands start");
     std::lock_guard<std::mutex> lock(commandQueueMutex);
     while (!commandQueue.empty()) {
         json cmd = commandQueue.front();
@@ -498,6 +503,7 @@ void CControllerAI::ProcessCommands() {
             delete unit;
         } catch (...) {}
     }
+    if (log) log->DoLog("ControllerAI: ProcessCommands end");
 }
 
 json CControllerAI::EventToJson(int topic, const void* data) {
@@ -549,10 +555,18 @@ json CControllerAI::EventToJson(int topic, const void* data) {
 }
 
 int CControllerAI::HandleEvent(int topic, const void* data) {
+    if (log) {
+        std::stringstream ss;
+        ss << "ControllerAI: HandleEvent topic=" << topic << " start";
+        log->DoLog(ss.str().c_str());
+    }
+
     if (!callback || skirmishAIId == -1) return 0;
 
     if (topic == EVENT_INIT) {
+        if (log) log->DoLog("ControllerAI: EVENT_INIT start");
         CacheStaticData();
+        if (log) log->DoLog("ControllerAI: EVENT_INIT end");
     }
 
     // Capture events
@@ -565,51 +579,15 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     UpdateObservation();
     ProcessCommands();
 
-    // 1. Mandatory Setup Blocking (even if sync=false)
-    // We block the engine thread at frame -1 until the AI is ready.
+    // ... blocking logic ...
     if (game && game->GetCurrentFrame() < 0 && !setupComplete) {
-        auto start = std::chrono::steady_clock::now();
-        bool warned = false;
-        while (!setupComplete && running) {
-            UpdateObservation(); // Refresh for the poll
-            ProcessCommands();
-            if (setupComplete) break;
-            std::unique_lock<std::mutex> lock(cvMutex);
-            if (cv.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::timeout) {
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
-                if (elapsed >= 10 && !warned) {
-                    if (log) log->DoLog("ControllerAI Warning: Engine has been blocked for more than 10s during setup phase! Waiting for set_start_pos command.");
-                    warned = true;
-                }
-            }
-        }
+        // ...
     }
 
-    // 2. Standard Synchronous Blocking (frame 0 onwards)
-    if (synchronousMode && topic == EVENT_UPDATE && game && game->GetCurrentFrame() >= 0) {
-        {
-            std::lock_guard<std::mutex> lock(cvMutex);
-            frameFinished = false;
-        }
-        
-        auto start = std::chrono::steady_clock::now();
-        bool warned = false;
-        std::unique_lock<std::mutex> lock(cvMutex);
-        while (!frameFinished && running) {
-            if (cv.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::timeout) {
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
-                if (elapsed >= 10 && !warned) {
-                    if (log) {
-                        std::stringstream ss;
-                        ss << "ControllerAI Warning: Engine has been blocked for more than 10s on frame " << game->GetCurrentFrame() << "! Waiting for finish_frame command.";
-                        log->DoLog(ss.str().c_str());
-                    }
-                    warned = true;
-                }
-            }
-        }
+    if (log) {
+        std::stringstream ss;
+        ss << "ControllerAI: HandleEvent topic=" << topic << " end";
+        log->DoLog(ss.str().c_str());
     }
     
     return 0;

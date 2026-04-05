@@ -37,29 +37,40 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     frameFinished(true),
     eventBuffer(json::array())
 {
+    if (callback) {
+        game = std::unique_ptr<springai::Game>(callback->GetGame());
+        map = std::unique_ptr<springai::Map>(callback->GetMap());
+        log = std::unique_ptr<springai::Log>(callback->GetLog());
+        skirmishAI = std::unique_ptr<springai::SkirmishAI>(callback->GetSkirmishAI());
+        economy = std::unique_ptr<springai::Economy>(callback->GetEconomy());
+        lua = std::unique_ptr<springai::Lua>(callback->GetLua());
+        mod = std::unique_ptr<springai::Mod>(callback->GetMod());
+    }
+
     // Load options from engine
-    springai::SkirmishAI* ai = callback->GetSkirmishAI();
-    springai::OptionValues* options = ai->GetOptionValues();
-    
     bindAddress = "0.0.0.0";
-    const char* ip_opt = options->GetValueByKey("ip");
-    if (ip_opt != nullptr) {
-        bindAddress = ip_opt;
-    }
-
     port = 3017;
-    const char* port_opt = options->GetValueByKey("port");
-    if (port_opt != nullptr) {
-        port = std::stoi(port_opt);
-    }
 
-    const char* sync_opt = options->GetValueByKey("sync");
-    if (sync_opt != nullptr) {
-        synchronousMode = (std::string(sync_opt) == "true");
-    }
+    if (skirmishAI) {
+        springai::OptionValues* options = skirmishAI->GetOptionValues();
+        if (options) {
+            const char* ip_opt = options->GetValueByKey("ip");
+            if (ip_opt != nullptr) {
+                bindAddress = ip_opt;
+            }
 
-    delete options;
-    delete ai;
+            const char* port_opt = options->GetValueByKey("port");
+            if (port_opt != nullptr) {
+                port = std::stoi(port_opt);
+            }
+
+            const char* sync_opt = options->GetValueByKey("sync");
+            if (sync_opt != nullptr) {
+                synchronousMode = (std::string(sync_opt) == "true");
+            }
+            delete options;
+        }
+    }
 
     ParseSpawnBoxes();
     UpdateObservation(); // Generate frame -1 observation
@@ -73,6 +84,7 @@ CControllerAI::~CControllerAI() {
     if (serverThread.joinable()) {
         serverThread.join();
     }
+    // unique_ptrs will be destroyed automatically
 }
 
 void CControllerAI::ServerThread() {
@@ -89,13 +101,10 @@ void CControllerAI::ServerThread() {
     });
 
     svr.Get("/game_info", [this](const httplib::Request&, httplib::Response& res) {
-        if (!callback) {
+        if (!game || !mod || !map) {
             res.status = 500;
             return;
         }
-        const std::unique_ptr<springai::Game> game(callback->GetGame());
-        const std::unique_ptr<springai::Mod> mod(callback->GetMod());
-        const std::unique_ptr<springai::Map> map(callback->GetMap());
         
         json info;
         info["modName"] = mod->GetHumanName();
@@ -115,7 +124,7 @@ void CControllerAI::ServerThread() {
     });
 
     svr.Get("/map_features", [this](const httplib::Request&, httplib::Response& res) {
-        if (!callback) {
+        if (!callback || !map) {
             res.status = 500;
             return;
         }
@@ -124,7 +133,6 @@ void CControllerAI::ServerThread() {
         // 1. Resource Spots
         out["spots"] = json::array();
         std::vector<springai::Resource*> resources = callback->GetResources();
-        const std::unique_ptr<springai::Map> map(callback->GetMap());
         for (springai::Resource* res_ptr : resources) {
             std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
             for (const auto& spot_pos : spots) {
@@ -156,11 +164,10 @@ void CControllerAI::ServerThread() {
     });
 
     svr.Get("/heightmap", [this](const httplib::Request&, httplib::Response& res) {
-        if (!callback) {
+        if (!map) {
             res.status = 500;
             return;
         }
-        const std::unique_ptr<springai::Map> map(callback->GetMap());
         int width = map->GetWidth();
         int height = map->GetHeight();
         std::vector<float> heights = map->GetHeightMap();
@@ -192,9 +199,7 @@ void CControllerAI::ServerThread() {
 }
 
 void CControllerAI::ParseSpawnBoxes() {
-    if (!callback) return;
-    const std::unique_ptr<springai::Game> game(callback->GetGame());
-    const std::unique_ptr<springai::Map> map(callback->GetMap());
+    if (!game || !map) return;
     std::string script = game->GetSetupScript();
     
     int width = map->GetWidth() * 8; // Heightmap pixels to elmos
@@ -242,8 +247,7 @@ void CControllerAI::ParseSpawnBoxes() {
 }
 
 bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
-    if (!callback) return false;
-    const std::unique_ptr<springai::Game> game(callback->GetGame());
+    if (!game || !lua) return false;
     int myAlly = game->GetMyAllyTeam();
     
     std::string allyStr = std::to_string(myAlly);
@@ -255,7 +259,6 @@ bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
     }
 
     // Engine validation via LuaRules. We try both / and , separators for compatibility.
-    const std::unique_ptr<springai::Lua> lua(callback->GetLua());
     std::string formats[] = { ",", "/" };
     for (const std::string& sep : formats) {
         std::stringstream ss;
@@ -321,10 +324,9 @@ std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
 }
 
 void CControllerAI::UpdateObservation() {
-    if (!callback) return;
+    if (!game || !economy) return;
 
     json obs;
-    const std::unique_ptr<springai::Game> game(callback->GetGame());
     obs["frame"] = game->GetCurrentFrame();
     obs["aiId"] = skirmishAIId;
     obs["teamId"] = game->GetMyTeam();
@@ -371,15 +373,14 @@ void CControllerAI::UpdateObservation() {
     }
 
     // Economy
-    const std::unique_ptr<springai::Economy> eco(callback->GetEconomy());
     std::vector<springai::Resource*> resources = callback->GetResources();
     obs["economy"] = json::object();
     for (springai::Resource* res_ptr : resources) {
         json r;
-        r["current"] = eco->GetCurrent(res_ptr);
-        r["storage"] = eco->GetStorage(res_ptr);
-        r["income"] = eco->GetIncome(res_ptr);
-        r["usage"] = eco->GetUsage(res_ptr);
+        r["current"] = economy->GetCurrent(res_ptr);
+        r["storage"] = economy->GetStorage(res_ptr);
+        r["income"] = economy->GetIncome(res_ptr);
+        r["usage"] = economy->GetUsage(res_ptr);
         obs["economy"][res_ptr->GetName()] = r;
         delete res_ptr;
     }
@@ -477,8 +478,7 @@ void CControllerAI::ProcessCommands() {
                 springai::AIFloat3 pos = {cmd["pos"][0], cmd["pos"][1], cmd["pos"][2]};
                 bool ready = cmd.value("ready", true);
                 if (IsSpawnPosValid(pos)) {
-                    const std::unique_ptr<springai::Game> game(callback->GetGame());
-                    game->SendStartPosition(ready, pos);
+                    if (game) game->SendStartPosition(ready, pos);
                     if (ready) {
                         std::lock_guard<std::mutex> lock(cvMutex);
                         setupComplete = true;
@@ -486,23 +486,25 @@ void CControllerAI::ProcessCommands() {
                     }
                 } else {
                     // Logic to inform user could be via text message or a status code if we wait
-                    const std::unique_ptr<springai::Game> game(callback->GetGame());
-                    game->SendTextMessage("ControllerAI: Invalid start position received!", 0);
+                    if (game) game->SendTextMessage("ControllerAI: Invalid start position received!", 0);
                 }
             } else if (type == "set_commander") {
                 std::string name = cmd["name"];
-                const std::unique_ptr<springai::Lua> lua(callback->GetLua());
-                std::string msg = "ai_commander:" + name;
-                lua->CallRules(msg.c_str(), (int)msg.size());
+                if (lua) {
+                    std::string msg = "ai_commander:" + name;
+                    lua->CallRules(msg.c_str(), (int)msg.size());
+                }
             } else if (type == "set_side") {
                 std::string name = cmd["name"];
-                const std::unique_ptr<springai::Lua> lua(callback->GetLua());
-                std::string msg = "ai_side:" + name;
-                lua->CallRules(msg.c_str(), (int)msg.size());
+                if (lua) {
+                    std::string msg = "ai_side:" + name;
+                    lua->CallRules(msg.c_str(), (int)msg.size());
+                }
             } else if (type == "lua") {
-                const std::unique_ptr<springai::Lua> lua(callback->GetLua());
-                std::string data = cmd["data"];
-                lua->CallRules(data.c_str(), (int)data.size());
+                if (lua) {
+                    std::string data = cmd["data"];
+                    lua->CallRules(data.c_str(), (int)data.size());
+                }
             } else if (type == "finish_frame") {
                 std::lock_guard<std::mutex> lock(cvMutex);
                 frameFinished = true;
@@ -577,7 +579,6 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
 
     // 1. Mandatory Setup Blocking (even if sync=false)
     // We block the engine thread at frame -1 until the AI is ready.
-    const std::unique_ptr<springai::Game> game(callback->GetGame());
     if (game && game->GetCurrentFrame() < 0 && !setupComplete) {
         auto start = std::chrono::steady_clock::now();
         bool warned = false;
@@ -590,7 +591,6 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
                 auto now = std::chrono::steady_clock::now();
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
                 if (elapsed >= 10 && !warned) {
-                    const std::unique_ptr<springai::Log> log(callback->GetLog());
                     if (log) log->DoLog("ControllerAI Warning: Engine has been blocked for more than 10s during setup phase! Waiting for set_start_pos command.");
                     warned = true;
                 }
@@ -613,7 +613,6 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
                 auto now = std::chrono::steady_clock::now();
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
                 if (elapsed >= 10 && !warned) {
-                    const std::unique_ptr<springai::Log> log(callback->GetLog());
                     if (log) {
                         std::stringstream ss;
                         ss << "ControllerAI Warning: Engine has been blocked for more than 10s on frame " << game->GetCurrentFrame() << "! Waiting for finish_frame command.";

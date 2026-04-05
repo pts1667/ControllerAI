@@ -5,6 +5,14 @@
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 
+#include "Game.h"
+#include "Map.h"
+#include "Log.h"
+#include "SkirmishAI.h"
+#include "Economy.h"
+#include "Lua.h"
+#include "Mod.h"
+
 #include <thread>
 #include <mutex>
 #include <vector>
@@ -13,6 +21,7 @@
 #include <map>
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 
 namespace controllerai {
 
@@ -22,6 +31,15 @@ class CControllerAI {
 private:
     springai::OOAICallback* callback;
     int skirmishAIId;
+
+    // Engine Objects
+    std::unique_ptr<springai::Game> game;
+    std::unique_ptr<springai::Map> map;
+    std::unique_ptr<springai::Log> log;
+    std::unique_ptr<springai::SkirmishAI> skirmishAI;
+    std::unique_ptr<springai::Economy> economy;
+    std::unique_ptr<springai::Lua> lua;
+    std::unique_ptr<springai::Mod> mod;
 
     // HTTP Server
     httplib::Server svr;

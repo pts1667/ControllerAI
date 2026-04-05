@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <regex>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace controllerai {
@@ -318,6 +319,28 @@ std::tuple<int, json> CControllerAI::ParseUnit(springai::Unit* unit) {
     return std::make_tuple(unit->GetUnitId(), u);
 }
 
+std::tuple<int, json> CControllerAI::ParseRadarBlip(springai::Unit* unit) {
+    if (!unit) return std::make_tuple(-1, json());
+
+    json blip;
+    springai::AIFloat3 pos = unit->GetPos();
+    springai::AIFloat3 vel = unit->GetVel();
+
+    blip["allyTeam"] = unit->GetAllyTeam();
+    blip["pos"] = json::array({pos.x, pos.y, pos.z});
+    blip["vel"] = json::array({vel.x, vel.y, vel.z});
+    blip["inLos"] = false;
+    blip["isRadarBlip"] = true;
+
+    springai::UnitDef* def = unit->GetDef();
+    if (def) {
+        blip["defId"] = def->GetUnitDefId();
+        blip["name"] = SafeCString(def->GetName());
+    }
+
+    return std::make_tuple(unit->GetUnitId(), blip);
+}
+
 void CControllerAI::UpdateObservation() {
     if (!callback || !game || !economy || !server) return;
 
@@ -334,17 +357,35 @@ void CControllerAI::UpdateObservation() {
         if (!unit) continue;
         
         auto [unitId, u] = ParseUnit(unit);
+        if (unitId == -1) continue;
         obs["units"][std::to_string(unitId)] = u;
     }
 
     // Enemy units
     obs["enemies"] = json::object();
+    std::unordered_set<int> enemyIds;
     std::vector<springai::Unit*> enemies = callback->GetEnemyUnits();
     for (springai::Unit* unit : enemies) {
         if (!unit) continue;
 
         auto [unitId, e] = ParseUnit(unit);
+        if (unitId == -1) continue;
+        enemyIds.insert(unitId);
+        e["inLos"] = true;
         obs["enemies"][std::to_string(unitId)] = e;
+    }
+
+    obs["radarBlips"] = json::object();
+    std::vector<springai::Unit*> radarContacts = callback->GetEnemyUnitsInRadarAndLos();
+    for (springai::Unit* unit : radarContacts) {
+        if (!unit) continue;
+
+        auto [unitId, blip] = ParseRadarBlip(unit);
+        if (unitId == -1 || enemyIds.find(unitId) != enemyIds.end()) {
+            continue;
+        }
+
+        obs["radarBlips"][std::to_string(unitId)] = blip;
     }
 
     // Economy

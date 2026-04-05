@@ -48,12 +48,23 @@ For simple integrations, polling this endpoint is still supported and unchanged.
     }
   },
   "enemies": { ... },
+  "radarBlips": {
+    "2048": {
+      "allyTeam": 1,
+      "pos": [4200.0, 85.0, 3900.0],
+      "vel": [0.0, 0.0, 1.5],
+      "inLos": false,
+      "isRadarBlip": true
+    }
+  },
   "economy": { ... },
   "events": [
     { "topic": 2, "unitId": 1025, "builderId": 1024 }
   ]
 }
 ```
+
+`enemies` contains units currently in LOS. `radarBlips` contains enemy contacts available through radar/sensor coverage but not currently in LOS.
 
 ### 2. `GET /metadata`
 Returns static data about all unit types available in the current game/mod.

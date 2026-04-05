@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace controllerai {
@@ -58,6 +59,8 @@ private:
     void WaitForResume();
     
     void CacheStaticData();
+    std::tuple<int, json> ParseUnit(springai::Unit* unit);
+    std::tuple<int, json> ParseRadarBlip(springai::Unit* unit);
 
     bool IsSpawnPosValid(const springai::AIFloat3& pos);
 

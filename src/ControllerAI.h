@@ -47,6 +47,7 @@ private:
     bool synchronousMode;
     bool setupComplete;
     bool canChooseStartPos;
+    bool gameModeInitialized;
     bool frameFinished;
 
     // Helper for event serialization

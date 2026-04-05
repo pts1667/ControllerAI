@@ -57,6 +57,11 @@ void CControllerAIServer::PublishGameInfo(json gameInfo) {
     gameInfoCache = std::move(gameInfo);
 }
 
+void CControllerAIServer::SetGameMode(int gameMode) {
+    std::lock_guard<std::mutex> lock(snapshotMutex);
+    gameInfoCache["gameMode"] = gameMode;
+}
+
 void CControllerAIServer::PublishSpawnBoxes(json spawnBoxes) {
     std::lock_guard<std::mutex> lock(snapshotMutex);
     spawnBoxesCache = std::move(spawnBoxes);

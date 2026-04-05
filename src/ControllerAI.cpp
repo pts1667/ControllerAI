@@ -42,6 +42,7 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     synchronousMode(true),
     setupComplete(true),
     canChooseStartPos(false),
+    gameModeInitialized(false),
     frameFinished(true)
 {
     if (callback) {
@@ -88,7 +89,6 @@ CControllerAI::~CControllerAI() {
 }
 
 void CControllerAI::CacheStaticData() {
-    if (log) log->DoLog("ControllerAI: CacheStaticData start");
     if (!server) {
         return;
     }
@@ -99,45 +99,26 @@ void CControllerAI::CacheStaticData() {
     json mapFeaturesCache = json::object();
     json heightmapCache = json::object();
 
-    if (log) log->DoLog("ControllerAI: Caching game info");
     if (mod) {
-        if (log) log->DoLog("ControllerAI: Caching game info: reading mod human name");
         gameInfoCache["modName"] = SafeCString(mod->GetHumanName());
-        if (log) log->DoLog("ControllerAI: Caching game info: mod human name read");
-    } else if (log) {
-        log->DoLog("ControllerAI: WARNING- no mod ???");
     }
 
     if (map) {
-        if (log) log->DoLog("ControllerAI: Caching game info: reading map human name");
         gameInfoCache["mapName"] = SafeCString(map->GetHumanName());
-        if (log) log->DoLog("ControllerAI: Caching game info: map human name read");
-    } else if (log) {
-        log->DoLog("ControllerAI: WARNING- no map ???");
     }
 
     std::string script;
     if (game) {
-        if (log) log->DoLog("ControllerAI: Caching game info: skipping game mode read during init");
         gameInfoCache["gameMode"] = -1;
-        if (log) log->DoLog("ControllerAI: Caching game info: reading paused state");
         gameInfoCache["isPaused"] = game->IsPaused();
-        if (log) log->DoLog("ControllerAI: Caching game info: paused state read");
 
-        if (log) log->DoLog("ControllerAI: Caching game info: reading setup script");
         script = SafeCString(game->GetSetupScript());
-        if (log) log->DoLog("ControllerAI: Caching game info: setup script read");
-        if (log) log->DoLog("ControllerAI: Caching game info: checking start position mode");
         canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
         setupComplete = !canChooseStartPos;
-        if (log) log->DoLog("ControllerAI: Caching game info: start position mode checked");
-    } else if (log) {
-        log->DoLog("ControllerAI: WARNING- no game ???");
     }
     gameInfoCache["canChooseStartPos"] = canChooseStartPos;
 
     if (map && !script.empty()) {
-        if (log) log->DoLog("ControllerAI: Caching spawn boxes");
         int width_elmos = map->GetWidth() * 8;
         int height_elmos = map->GetHeight() * 8;
 
@@ -170,11 +151,8 @@ void CControllerAI::CacheStaticData() {
                 spawnBoxesCache[std::to_string(allyId)] = box;
             }
         }
-    } else if (log) {
-        log->DoLog("ControllerAI: WARNING- can't populate spawn boxes, either empty map or empty script");
     }
 
-    if (log) log->DoLog("ControllerAI: Caching unit metadata");
     if (callback) {
         std::vector<springai::UnitDef*> defs = callback->GetUnitDefs();
         for (springai::UnitDef* def : defs) {
@@ -191,7 +169,6 @@ void CControllerAI::CacheStaticData() {
         }
     }
 
-    if (log) log->DoLog("ControllerAI: Caching map features");
     mapFeaturesCache["spots"] = json::array();
     mapFeaturesCache["features"] = json::array();
     if (callback && map) {
@@ -226,8 +203,6 @@ void CControllerAI::CacheStaticData() {
     }
 
     if (map) {
-        if (log) log->DoLog("ControllerAI: Caching heightmap");
-
         int h_width = map->GetWidth();
         int h_height = map->GetHeight();
         std::vector<float> heights = map->GetHeightMap();
@@ -237,8 +212,6 @@ void CControllerAI::CacheStaticData() {
             reinterpret_cast<const unsigned char*>(heights.data()),
             heights.size() * sizeof(float)
         );
-    } else if (log) {
-        log->DoLog("ControllerAI: WARNING- no map, can't produce heightmap");
     }
 
     server->PublishGameInfo(std::move(gameInfoCache));
@@ -246,8 +219,6 @@ void CControllerAI::CacheStaticData() {
     server->PublishMetadata(std::move(unitDefsCache));
     server->PublishMapFeatures(std::move(mapFeaturesCache));
     server->PublishHeightmap(std::move(heightmapCache));
-
-    if (log) log->DoLog("ControllerAI: CacheStaticData end");
 }
 
 std::string CControllerAI::SafeCString(const char* value) const {
@@ -255,10 +226,7 @@ std::string CControllerAI::SafeCString(const char* value) const {
 }
 
 bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
-    if (!game || !lua || !server) {
-        if (log) log->DoLog("ControllerAI: WARNING in IsSpawnPosValid- game, lua, or server is null");
-        return false;
-    }
+    if (!game || !lua || !server) return false;
     int myAlly = game->GetMyAllyTeam();
     
     std::string allyStr = std::to_string(myAlly);
@@ -317,11 +285,7 @@ std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
 }
 
 void CControllerAI::UpdateObservation() {
-    if (log) log->DoLog("ControllerAI: UpdateObservation start");
-    if (!callback || !game || !economy || !server) {
-        if (log) log->DoLog("ControllerAI: WARNING in UpdateObservation- failed null check");
-        return;
-    }
+    if (!callback || !game || !economy || !server) return;
 
     json obs;
     obs["frame"] = game->GetCurrentFrame();
@@ -390,14 +354,10 @@ void CControllerAI::UpdateObservation() {
     obs["events"] = eventBuffer;
     eventBuffer = json::array(); // Clear buffer after poll
     server->PublishObservation(std::move(obs));
-    if (log) log->DoLog("ControllerAI: UpdateObservation end");
 }
 
 void CControllerAI::ProcessCommands() {
-    if (log) log->DoLog("ControllerAI: ProcessCommands start");
-    if (!server) {
-        return;
-    }
+    if (!server) return;
 
     std::vector<json> commands = server->DrainCommands();
     for (json& cmd : commands) {
@@ -507,21 +467,14 @@ void CControllerAI::ProcessCommands() {
             }
         } catch (...) {}
     }
-    if (log) log->DoLog("ControllerAI: ProcessCommands end");
 }
 
 void CControllerAI::WaitForResume() {
-    if (!server) {
-        return;
-    }
+    if (!server) return;
 
     while (running) {
         if (game && canChooseStartPos && !setupComplete) {
-            if (log) log->DoLog("ControllerAI: Waiting for start position");
-            if (!server->WaitForCommands()) {
-                if (log) log->DoLog("ControllerAI: Warning- Waiting for start position timed out");
-                return;
-            }
+            if (!server->WaitForCommands()) return;
             ProcessCommands();
             continue;
         }
@@ -530,11 +483,7 @@ void CControllerAI::WaitForResume() {
             return;
         }
 
-        if (log) log->DoLog("ControllerAI: Waiting for finish_frame");
-        if (!server->WaitForCommands()) {
-            if (log) log->DoLog("ControllerAI: Warning- Waiting for finish_frame timed out");
-            return;
-        }
+        if (!server->WaitForCommands()) return;
         ProcessCommands();
     }
 }
@@ -588,25 +537,22 @@ json CControllerAI::EventToJson(int topic, const void* data) {
 }
 
 int CControllerAI::HandleEvent(int topic, const void* data) {
-    if (log) {
-        std::stringstream ss;
-        ss << "ControllerAI: HandleEvent topic=" << topic << " start";
-        log->DoLog(ss.str().c_str());
-    }
-
     if (!callback || skirmishAIId == -1) return 0;
 
     if (topic == EVENT_INIT) {
-        if (log) log->DoLog("ControllerAI: EVENT_INIT start");
         CacheStaticData();
         UpdateObservation();
-        if (log) log->DoLog("ControllerAI: EVENT_INIT end");
     }
 
     // Capture events
     json ev = EventToJson(topic, data);
     if (!ev.is_null() && ev.contains("topic")) {
         eventBuffer.push_back(ev);
+    }
+
+    if (topic == EVENT_UNIT_CREATED && !gameModeInitialized && game && server) {
+        server->SetGameMode(game->GetMode());
+        gameModeInitialized = true;
     }
 
     if (topic == EVENT_UPDATE) {
@@ -618,12 +564,6 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
         ProcessCommands();
         UpdateObservation();
         WaitForResume();
-    }
-
-    if (log) {
-        std::stringstream ss;
-        ss << "ControllerAI: HandleEvent topic=" << topic << " end";
-        log->DoLog(ss.str().c_str());
     }
     
     return 0;

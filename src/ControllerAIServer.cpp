@@ -288,6 +288,7 @@ void CControllerAIServer::ConfigureRoutes() {
         std::thread sender([session, &ws]() {
             while (true) {
                 std::string payload;
+                bool shouldCloseSocket = false;
                 {
                     std::unique_lock<std::mutex> lock(session->mutex);
                     session->cv.wait(lock, [&]() {
@@ -295,11 +296,18 @@ void CControllerAIServer::ConfigureRoutes() {
                     });
 
                     if (session->closed) {
-                        break;
+                        shouldCloseSocket = true;
+                    } else {
+                        payload = std::move(session->outgoingMessages.front());
+                        session->outgoingMessages.pop();
                     }
+                }
 
-                    payload = std::move(session->outgoingMessages.front());
-                    session->outgoingMessages.pop();
+                if (shouldCloseSocket) {
+                    if (ws.is_open()) {
+                        ws.close(httplib::ws::CloseStatus::GoingAway, "server shutdown");
+                    }
+                    break;
                 }
 
                 if (!ws.send(payload)) {

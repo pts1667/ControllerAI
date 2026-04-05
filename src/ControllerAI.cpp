@@ -68,7 +68,6 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
             if (sync_opt != nullptr) {
                 synchronousMode = (std::string(sync_opt) == "true");
             }
-            delete options;
         }
     }
 
@@ -157,11 +156,12 @@ void CControllerAI::CacheStaticData() {
         log->DoLog("ControllerAI: WARNING- no map ???");
     }
     
+    std::string script = "";
     if (game) {
         gameInfoCache["gameMode"] = game->GetMode();
         gameInfoCache["isPaused"] = game->IsPaused();
 
-        std::string script = game->GetSetupScript();
+        script = game->GetSetupScript();
         canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
         gameInfoCache["canChooseStartPos"] = canChooseStartPos;
         setupComplete = !canChooseStartPos;
@@ -170,38 +170,42 @@ void CControllerAI::CacheStaticData() {
     }
 
     // 2. Spawn Boxes
-    if (log) log->DoLog("ControllerAI: Caching spawn boxes");
-    spawnBoxesCache = json::object();
-    int width_elmos = map->GetWidth() * 8;
-    int height_elmos = map->GetHeight() * 8;
-    
-    std::regex zkPattern("\\[(\\d+)\\]\\s*=\\s*\\{\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)\\s*\\}");
-    auto zk_it = std::sregex_iterator(script.begin(), script.end(), zkPattern);
-    auto zk_end = std::sregex_iterator();
-    for (std::sregex_iterator i = zk_it; i != zk_end; ++i) {
-        std::smatch match = *i;
-        int allyId = std::stoi(match[1]);
-        json box;
-        box["left"] = std::stof(match[2]) * width_elmos;
-        box["top"] = std::stof(match[3]) * height_elmos;
-        box["right"] = std::stof(match[4]) * width_elmos;
-        box["bottom"] = std::stof(match[5]) * height_elmos;
-        spawnBoxesCache[std::to_string(allyId)] = box;
-    }
-    if (spawnBoxesCache.empty()) {
-        std::regex stdPattern("allyteam(\\d+)\\s*\\{[^}]*rect\\s*=\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)");
-        auto std_it = std::sregex_iterator(script.begin(), script.end(), stdPattern);
-        auto std_end = std::sregex_iterator();
-        for (std::sregex_iterator i = std_it; i != std_end; ++i) {
+    if (map && script != "") {
+        if (log) log->DoLog("ControllerAI: Caching spawn boxes");
+        spawnBoxesCache = json::object();
+        int width_elmos = map->GetWidth() * 8;
+        int height_elmos = map->GetHeight() * 8;
+        
+        std::regex zkPattern("\\[(\\d+)\\]\\s*=\\s*\\{\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)\\s*\\}");
+        auto zk_it = std::sregex_iterator(script.begin(), script.end(), zkPattern);
+        auto zk_end = std::sregex_iterator();
+        for (std::sregex_iterator i = zk_it; i != zk_end; ++i) {
             std::smatch match = *i;
             int allyId = std::stoi(match[1]);
             json box;
-            box["left"] = std::stof(match[2]);
-            box["top"] = std::stof(match[3]);
-            box["right"] = std::stof(match[4]);
-            box["bottom"] = std::stof(match[5]);
+            box["left"] = std::stof(match[2]) * width_elmos;
+            box["top"] = std::stof(match[3]) * height_elmos;
+            box["right"] = std::stof(match[4]) * width_elmos;
+            box["bottom"] = std::stof(match[5]) * height_elmos;
             spawnBoxesCache[std::to_string(allyId)] = box;
         }
+        if (spawnBoxesCache.empty()) {
+            std::regex stdPattern("allyteam(\\d+)\\s*\\{[^}]*rect\\s*=\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)");
+            auto std_it = std::sregex_iterator(script.begin(), script.end(), stdPattern);
+            auto std_end = std::sregex_iterator();
+            for (std::sregex_iterator i = std_it; i != std_end; ++i) {
+                std::smatch match = *i;
+                int allyId = std::stoi(match[1]);
+                json box;
+                box["left"] = std::stof(match[2]);
+                box["top"] = std::stof(match[3]);
+                box["right"] = std::stof(match[4]);
+                box["bottom"] = std::stof(match[5]);
+                spawnBoxesCache[std::to_string(allyId)] = box;
+            }
+        }
+    } else {
+        log->DoLog("ControllerAI: WARNING- can't populate spawn boxes, either empty map or empty script");
     }
 
     // 3. Unit Metadata
@@ -209,6 +213,8 @@ void CControllerAI::CacheStaticData() {
     unitDefsCache = json::object();
     std::vector<springai::UnitDef*> defs = callback->GetUnitDefs();
     for (springai::UnitDef* def : defs) {
+        if (!def) continue;
+
         json d;
         d["name"] = def->GetName();
         d["humanName"] = def->GetHumanName();
@@ -217,7 +223,6 @@ void CControllerAI::CacheStaticData() {
         d["speed"] = def->GetSpeed();
         d["range"] = def->GetMaxWeaponRange();
         unitDefsCache[std::to_string(def->GetUnitDefId())] = d;
-        delete def;
     }
 
     // 4. Map Features & Resources
@@ -226,6 +231,8 @@ void CControllerAI::CacheStaticData() {
     mapFeaturesCache["spots"] = json::array();
     std::vector<springai::Resource*> resources = callback->GetResources();
     for (springai::Resource* res_ptr : resources) {
+        if (!res_ptr) continue;
+
         std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
         for (const auto& spot_pos : spots) {
             json s;
@@ -233,11 +240,13 @@ void CControllerAI::CacheStaticData() {
             s["pos"] = json::array({spot_pos.x, spot_pos.y, spot_pos.z});
             mapFeaturesCache["spots"].push_back(s);
         }
-        delete res_ptr;
     }
+
     mapFeaturesCache["features"] = json::array();
     std::vector<springai::Feature*> features = callback->GetFeatures();
     for (springai::Feature* f : features) {
+        if (!f) continue;
+
         json fj;
         fj["id"] = f->GetFeatureId();
         springai::AIFloat3 f_pos = f->GetPosition();
@@ -246,27 +255,36 @@ void CControllerAI::CacheStaticData() {
         springai::FeatureDef* fdef = f->GetDef();
         if (fdef) {
             fj["name"] = fdef->GetName();
-            delete fdef;
         }
         mapFeaturesCache["features"].push_back(fj);
-        delete f;
     }
 
     // 5. Heightmap
-    if (log) log->DoLog("ControllerAI: Caching heightmap");
-    heightmapCache = json::object();
-    int h_width = map->GetWidth();
-    int h_height = map->GetHeight();
-    std::vector<float> heights = map->GetHeightMap();
-    heightmapCache["width"] = h_width;
-    heightmapCache["height"] = h_height;
-    heightmapCache["data_b64"] = Base64Encode(reinterpret_cast<const unsigned char*>(heights.data()), heights.size() * sizeof(float));
-    
+    if (map) {
+        if (log) log->DoLog("ControllerAI: Caching heightmap");
+
+        heightmapCache = json::object();
+        int h_width = map->GetWidth();
+        int h_height = map->GetHeight();
+        std::vector<float> heights = map->GetHeightMap();
+        heightmapCache["width"] = h_width;
+        heightmapCache["height"] = h_height;
+        heightmapCache["data_b64"] = Base64Encode(
+            reinterpret_cast<const unsigned char*>(heights.data()),
+            heights.size() * sizeof(float)
+        );
+    } else {
+        log->DoLog("ControllerAI: WARNING- no map, can't produce heightmap");
+    }
+
     if (log) log->DoLog("ControllerAI: CacheStaticData end");
 }
 
 bool CControllerAI::IsSpawnPosValid(const springai::AIFloat3& pos) {
-    if (!game || !lua) return false;
+    if (!game || !lua) {
+        if (log) log->DoLog("ControllerAI: WARNING in IsSpawnPosValid- game or lua is null");
+        return false;
+    }
     int myAlly = game->GetMyAllyTeam();
     
     std::string allyStr = std::to_string(myAlly);
@@ -326,7 +344,10 @@ std::string CControllerAI::Base64Encode(const unsigned char* data, size_t len) {
 
 void CControllerAI::UpdateObservation() {
     if (log) log->DoLog("ControllerAI: UpdateObservation start");
-    if (!callback || !game || !economy) return;
+    if (!callback || !game || !economy) {
+        log->DoLog("ControllerAI: WARNING in UpdateObservation- failed null check");
+        return;
+    }
 
     json obs;
     obs["frame"] = game->GetCurrentFrame();
@@ -343,8 +364,8 @@ void CControllerAI::UpdateObservation() {
         springai::UnitDef* def = unit->GetDef();
         if (def) {
             u["defId"] = def->GetUnitDefId();
-            delete def;
         }
+
         springai::AIFloat3 pos = unit->GetPos();
         springai::AIFloat3 vel = unit->GetVel();
         u["pos"] = json::array({pos.x, pos.y, pos.z});
@@ -357,7 +378,6 @@ void CControllerAI::UpdateObservation() {
         u["isCloaked"] = unit->IsCloaked();
         u["isParalyzed"] = unit->IsParalyzed();
         obs["units"][std::to_string(unit->GetUnitId())] = u;
-        delete unit;
     }
 
     // Enemy units
@@ -371,12 +391,10 @@ void CControllerAI::UpdateObservation() {
         springai::UnitDef* def = unit->GetDef();
         if (def) {
             e["defId"] = def->GetUnitDefId();
-            delete def;
         }
         e["health"] = unit->GetHealth();
         
         obs["enemies"][std::to_string(unit->GetUnitId())] = e;
-        delete unit;
     }
 
     // Economy
@@ -390,7 +408,6 @@ void CControllerAI::UpdateObservation() {
         r["income"] = economy->GetIncome(res_ptr);
         r["usage"] = economy->GetUsage(res_ptr);
         obs["economy"][res_ptr->GetName()] = r;
-        delete res_ptr;
     }
 
     std::lock_guard<std::mutex> lock(stateMutex);
@@ -423,7 +440,6 @@ void CControllerAI::ProcessCommands() {
                 int targetId = cmd["targetId"];
                 springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, targetId);
                 if (target) unit->Attack(target, opts, 100000);
-                delete target;
             } else if (type == "build" && unit) {
                 int defId = cmd["defId"];
                 springai::UnitDef* def = springai::WrappUnitDef::GetInstance(skirmishAIId, defId);
@@ -433,7 +449,6 @@ void CControllerAI::ProcessCommands() {
                     pos.y = cmd["pos"][1];
                     pos.z = cmd["pos"][2];
                     unit->Build(def, pos, cmd.value("facing", 0), opts, 100000);
-                    delete def;
                 }
             } else if (type == "stop" && unit) {
                 unit->Stop(opts, 100000);
@@ -455,31 +470,25 @@ void CControllerAI::ProcessCommands() {
                 int targetId = cmd["targetId"];
                 springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, targetId);
                 if (target) unit->Guard(target, opts, 100000);
-                delete target;
             } else if (type == "repair" && unit) {
                 int targetId = cmd["targetId"];
                 springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, targetId);
                 if (target) unit->Repair(target, opts, 100000);
-                delete target;
             } else if (type == "reclaim" && unit) {
                 if (cmd.contains("targetId")) {
                     springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, cmd["targetId"]);
-                    if (target) unit->ReclaimUnit(target, opts, 100000);
-                    delete target;
+                    if (target) unit->ReclaimUnit(target, opts, 100000);;
                 } else if (cmd.contains("featureId")) {
                     springai::Feature* feature = springai::WrappFeature::GetInstance(skirmishAIId, cmd["featureId"]);
                     if (feature) unit->ReclaimFeature(feature, opts, 100000);
-                    delete feature;
                 }
             } else if (type == "resurrect" && unit) {
                 springai::Feature* feature = springai::WrappFeature::GetInstance(skirmishAIId, cmd["featureId"]);
                 if (feature) unit->Resurrect(feature, opts, 100000);
-                delete feature;
             } else if (type == "capture" && unit) {
                 int targetId = cmd["targetId"];
                 springai::Unit* target = springai::WrappUnit::GetInstance(skirmishAIId, targetId);
                 if (target) unit->Capture(target, opts, 100000);
-                delete target;
             } else if (type == "self_destruct" && unit) {
                 unit->SelfDestruct(opts, 100000);
             } else if (type == "custom" && unit) {
@@ -522,7 +531,6 @@ void CControllerAI::ProcessCommands() {
                 frameFinished = true;
                 cv.notify_one();
             }
-            delete unit;
         } catch (...) {}
     }
     if (log) log->DoLog("ControllerAI: ProcessCommands end");

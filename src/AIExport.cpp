@@ -8,7 +8,6 @@
 #include "Log.h"
 #include "OptionValues.h"
 #include "SkirmishAI.h"
-#include "System/Log/ILog.h"
 #include "WrappOOAICallback.h"
 
 #include "ControllerAI.h"
@@ -34,18 +33,35 @@ enum class ExportLogSeverity {
 	Error
 };
 
-void LogExportMessage(ExportLogSeverity severity, const std::string& message, springai::OOAICallback* callback = nullptr) {
+std::string FormatExportMessage(ExportLogSeverity severity, const std::string& message) {
+	const char* severityLabel = "info";
 	switch (severity) {
-		case ExportLogSeverity::Info:
-			LOG_L(L_INFO, "%s", message.c_str());
-			break;
 		case ExportLogSeverity::Warning:
-			LOG_L(L_WARNING, "%s", message.c_str());
+			severityLabel = "warning";
 			break;
 		case ExportLogSeverity::Error:
-		default:
-			LOG_L(L_ERROR, "%s", message.c_str());
+			severityLabel = "error";
 			break;
+		case ExportLogSeverity::Info:
+		default:
+			break;
+	}
+
+	return std::string("[ControllerAI][AIExport][") + severityLabel + "] " + message;
+}
+
+void LogExportMessage(ExportLogSeverity severity, const std::string& message, springai::OOAICallback* callback = nullptr) {
+	if (callback == nullptr) {
+		return;
+	}
+
+	try {
+		std::unique_ptr<springai::Log> log(callback->GetLog());
+		if (log) {
+			const std::string formattedMessage = FormatExportMessage(severity, message);
+			log->DoLog(formattedMessage.c_str());
+		}
+	} catch (...) {
 	}
 }
 
@@ -315,9 +331,9 @@ EXPORT(int) init(int skirmishAIId, const struct SSkirmishAICallback* innerCallba
 	springai::OOAICallback* callbackForLogging = nullptr;
 
 	try {
-		LogExportMessage(ExportLogSeverity::Info, "ControllerAI init: begin");
 		auto clb = std::unique_ptr<springai::OOAICallback>(springai::WrappOOAICallback::GetInstance(innerCallback, skirmishAIId));
 		callbackForLogging = clb.get();
+		LogExportMessage(ExportLogSeverity::Info, "ControllerAI init: begin", callbackForLogging);
 		auto skirmishAI = std::unique_ptr<springai::SkirmishAI>(clb ? clb->GetSkirmishAI() : nullptr);
 		if (!skirmishAI) {
 			throw std::runtime_error("ControllerAI: failed to acquire SkirmishAI wrapper during init.");
@@ -391,6 +407,7 @@ EXPORT(int) init(int skirmishAIId, const struct SSkirmishAICallback* innerCallba
 EXPORT(int) release(int skirmishAIId) {
 
 	int ret = ERROR_SHIFT + 1;
+	springai::OOAICallback* callbackForLogging = nullptr;
 
 	try {
 		auto callbackIt = myAICallbacks.find(skirmishAIId);
@@ -400,6 +417,7 @@ EXPORT(int) release(int skirmishAIId) {
 		}
 
 		springai::OOAICallback* clb = callbackIt->second;
+		callbackForLogging = clb;
 		controllerai::CControllerAI* ai = aiIt->second;
 		myAICallbacks.erase(callbackIt);
 		myAIs.erase(aiIt);
@@ -411,19 +429,19 @@ EXPORT(int) release(int skirmishAIId) {
 		ret = 0;
 	} catch (int err) {
 		ret = err;
-		LogExportMessage(ExportLogSeverity::Error, "ControllerAI release failed with engine error code " + std::to_string(err));
+		LogExportMessage(ExportLogSeverity::Error, "ControllerAI release failed with engine error code " + std::to_string(err), callbackForLogging);
 	} catch (const std::exception& e) {
 		ret = ERROR_SHIFT + 2;
-		LogExportMessage(ExportLogSeverity::Error, std::string("ControllerAI release exception: ") + e.what());
+		LogExportMessage(ExportLogSeverity::Error, std::string("ControllerAI release exception: ") + e.what(), callbackForLogging);
 	} catch (const std::string& s) {
 		ret = ERROR_SHIFT + 3;
-		LogExportMessage(ExportLogSeverity::Error, std::string("ControllerAI release string exception: ") + s);
+		LogExportMessage(ExportLogSeverity::Error, std::string("ControllerAI release string exception: ") + s, callbackForLogging);
 	} catch (const char* s) {
 		ret = ERROR_SHIFT + 4;
-		LogExportMessage(ExportLogSeverity::Error, std::string("ControllerAI release C-string exception: ") + (s != nullptr ? s : "<null>"));
+		LogExportMessage(ExportLogSeverity::Error, std::string("ControllerAI release C-string exception: ") + (s != nullptr ? s : "<null>"), callbackForLogging);
 	} catch (...) {
 		ret = ERROR_SHIFT + 5;
-		LogExportMessage(ExportLogSeverity::Error, "ControllerAI release unknown exception.");
+		LogExportMessage(ExportLogSeverity::Error, "ControllerAI release unknown exception.", callbackForLogging);
 	}
 
 	return ret; // (ret != 0) => error
@@ -432,29 +450,34 @@ EXPORT(int) release(int skirmishAIId) {
 EXPORT(int) handleEvent(int skirmishAIId, int topic, const void* data) {
 
 	int ret = ERROR_SHIFT + 1;
+	springai::OOAICallback* callbackForLogging = nullptr;
 
 	try {
+		auto callbackIt = myAICallbacks.find(skirmishAIId);
 		auto aiIt = myAIs.find(skirmishAIId);
 		if (aiIt == myAIs.end() || aiIt->second == nullptr) {
 			throw std::runtime_error("ControllerAI: event requested for unknown skirmish AI ID.");
+		}
+		if (callbackIt != myAICallbacks.end()) {
+			callbackForLogging = callbackIt->second;
 		}
 
 		ret = aiIt->second->HandleEvent(topic, data);
 	} catch (int err) {
 		ret = err;
-		LogExportMessage(ExportLogSeverity::Warning, "ControllerAI handleEvent failed with engine error code " + std::to_string(err));
+		LogExportMessage(ExportLogSeverity::Warning, "ControllerAI handleEvent failed with engine error code " + std::to_string(err), callbackForLogging);
 	} catch (const std::exception& e) {
 		ret = ERROR_SHIFT + 2;
-		LogExportMessage(ExportLogSeverity::Warning, std::string("ControllerAI handleEvent exception: ") + e.what());
+		LogExportMessage(ExportLogSeverity::Warning, std::string("ControllerAI handleEvent exception: ") + e.what(), callbackForLogging);
 	} catch (const std::string& s) {
 		ret = ERROR_SHIFT + 3;
-		LogExportMessage(ExportLogSeverity::Warning, std::string("ControllerAI handleEvent string exception: ") + s);
+		LogExportMessage(ExportLogSeverity::Warning, std::string("ControllerAI handleEvent string exception: ") + s, callbackForLogging);
 	} catch (const char* s) {
 		ret = ERROR_SHIFT + 4;
-		LogExportMessage(ExportLogSeverity::Warning, std::string("ControllerAI handleEvent C-string exception: ") + (s != nullptr ? s : "<null>"));
+		LogExportMessage(ExportLogSeverity::Warning, std::string("ControllerAI handleEvent C-string exception: ") + (s != nullptr ? s : "<null>"), callbackForLogging);
 	} catch (...) {
 		ret = ERROR_SHIFT + 5;
-		LogExportMessage(ExportLogSeverity::Warning, "ControllerAI handleEvent unknown exception.");
+		LogExportMessage(ExportLogSeverity::Warning, "ControllerAI handleEvent unknown exception.", callbackForLogging);
 	}
 
 	return ret; // (ret != 0) => error

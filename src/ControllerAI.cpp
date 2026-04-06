@@ -50,7 +50,8 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     canChooseStartPos(false),
     frameFinished(true),
     startupBlocking(true),
-    released(false)
+    released(false),
+    blockNFrames(1)
 {
     if (callback) {
         game = std::unique_ptr<springai::Game>(callback->GetGame());
@@ -85,6 +86,7 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     server = std::make_unique<CControllerAIServer>(bindAddress, port);
 
     server->Start();
+    server->PublishSettings(GetSettings());
 }
 
 CControllerAI::~CControllerAI() {
@@ -235,6 +237,21 @@ void CControllerAI::CacheStaticData() {
 
 std::string CControllerAI::SafeCString(const char* value) const {
     return value != nullptr ? std::string(value) : std::string();
+}
+
+json CControllerAI::GetSettings() const {
+    return json({
+        {"block_n_frames", blockNFrames}
+    });
+}
+
+bool CControllerAI::ShouldPublishObservationForFrame(int frame) const {
+    if (frame < 0) {
+        return true;
+    }
+
+    const int interval = std::max(blockNFrames, 1);
+    return (frame % interval) == 0;
 }
 
 int CControllerAI::ReadIntValue(const json& query, const char* key) const {
@@ -1217,6 +1234,30 @@ json CControllerAI::HandleQuery(const json& query) {
     throw std::runtime_error("Unsupported query type.");
 }
 
+json CControllerAI::HandleSettings(const json& settingsPatch) {
+    if (!settingsPatch.is_object()) {
+        throw std::runtime_error("Settings payload must be a JSON object.");
+    }
+
+    if (settingsPatch.contains("block_n_frames")) {
+        int newValue = ReadIntValue(settingsPatch, "block_n_frames");
+        if (newValue < 1) {
+            throw std::runtime_error("block_n_frames must be at least 1.");
+        }
+        blockNFrames = newValue;
+    }
+
+    if (game && game->GetCurrentFrame() >= 0 && !ShouldPublishObservationForFrame(game->GetCurrentFrame())) {
+        frameFinished = true;
+    }
+
+    json settings = GetSettings();
+    if (server) {
+        server->PublishSettings(settings);
+    }
+    return settings;
+}
+
 void CControllerAI::ProcessQueries() {
     if (!server) {
         return;
@@ -1224,6 +1265,16 @@ void CControllerAI::ProcessQueries() {
 
     server->ProcessQueries([this](const json& query) {
         return HandleQuery(query);
+    });
+}
+
+void CControllerAI::ProcessSettings() {
+    if (!server) {
+        return;
+    }
+
+    server->ProcessSettings([this](const json& settingsPatch) {
+        return HandleSettings(settingsPatch);
     });
 }
 
@@ -1351,6 +1402,7 @@ void CControllerAI::WaitForResume() {
     while (running) {
         if (game && game->GetCurrentFrame() < 0 && startupBlocking) {
             if (!server->WaitForWork()) return;
+            ProcessSettings();
             ProcessQueries();
             ProcessCommands();
             continue;
@@ -1358,6 +1410,7 @@ void CControllerAI::WaitForResume() {
 
         if (game && canChooseStartPos && !setupComplete) {
             if (!server->WaitForWork()) return;
+            ProcessSettings();
             ProcessQueries();
             ProcessCommands();
             continue;
@@ -1368,6 +1421,7 @@ void CControllerAI::WaitForResume() {
         }
 
         if (!server->WaitForWork()) return;
+        ProcessSettings();
         ProcessQueries();
         ProcessCommands();
     }
@@ -1455,6 +1509,7 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     }
 
     if (topic != EVENT_RELEASE) {
+        ProcessSettings();
         ProcessQueries();
     }
 
@@ -1479,13 +1534,16 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
 
     if (topic == EVENT_UPDATE) {
         const int frame = data ? static_cast<const SUpdateEvent*>(data)->frame : -1;
+        const bool shouldPublish = (frame < 0) || ShouldPublishObservationForFrame(frame);
         if (frame >= 0) {
-            frameFinished = false;
+            frameFinished = !shouldPublish;
         }
 
         ProcessCommands();
-        UpdateObservation();
-        WaitForResume();
+        if (shouldPublish) {
+            UpdateObservation();
+            WaitForResume();
+        }
     }
     
     return 0;

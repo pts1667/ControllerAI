@@ -51,6 +51,7 @@ private:
     bool frameFinished;
     bool startupBlocking;
     bool released;
+    int blockNFrames;
 
     // Helper for event serialization
     json EventToJson(int topic, const void* data);
@@ -59,9 +60,13 @@ private:
     void UpdateObservation();
     void ProcessCommands();
     void ProcessQueries();
+    void ProcessSettings();
     void WaitForResume();
     void Release(int reason);
     json HandleQuery(const json& query);
+    json HandleSettings(const json& settingsPatch);
+    json GetSettings() const;
+    bool ShouldPublishObservationForFrame(int frame) const;
     
     void CacheStaticData();
     std::tuple<int, json> ParseUnit(springai::Unit* unit);

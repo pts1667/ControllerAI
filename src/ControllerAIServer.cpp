@@ -16,7 +16,8 @@ CControllerAIServer::CControllerAIServer(std::string bindAddress, int port) :
     gameInfoCache(json::object()),
     spawnBoxesCache(json::object()),
     mapFeaturesCache(json::object()),
-    heightmapCache(json::object())
+    heightmapCache(json::object()),
+    settingsCache(json::object())
 {
 }
 
@@ -36,7 +37,34 @@ json CControllerAIServer::BuildHttpQuery(const httplib::Request& req) const {
     return query;
 }
 
+json CControllerAIServer::BuildHttpSettingsPayload(const httplib::Request& req) const {
+    if (req.body.empty()) {
+        return json::object();
+    }
+
+    json payload = json::parse(req.body);
+    if (payload.contains("settings") && payload["settings"].is_object()) {
+        return payload["settings"];
+    }
+
+    if (!payload.is_object()) {
+        throw std::runtime_error("Settings payload must be a JSON object.");
+    }
+
+    return payload;
+}
+
 void CControllerAIServer::CompleteQuery(const std::shared_ptr<QueryRequest>& request, json response, const std::string& error) {
+    {
+        std::lock_guard<std::mutex> lock(request->mutex);
+        request->response = std::move(response);
+        request->error = error;
+        request->completed = true;
+    }
+    request->cv.notify_one();
+}
+
+void CControllerAIServer::CompleteSettings(const std::shared_ptr<SettingsRequest>& request, json response, const std::string& error) {
     {
         std::lock_guard<std::mutex> lock(request->mutex);
         request->response = std::move(response);
@@ -83,6 +111,19 @@ void CControllerAIServer::Stop() {
 
     for (const auto& request : pendingQueries) {
         CompleteQuery(request, json(), "server stopped");
+    }
+
+    std::vector<std::shared_ptr<SettingsRequest>> pendingSettings;
+    {
+        std::lock_guard<std::mutex> lock(settingsMutex);
+        while (!settingsQueue.empty()) {
+            pendingSettings.push_back(settingsQueue.front());
+            settingsQueue.pop();
+        }
+    }
+
+    for (const auto& request : pendingSettings) {
+        CompleteSettings(request, json(), "server stopped");
     }
 
     if (wasRunning) {
@@ -155,9 +196,24 @@ void CControllerAIServer::PublishHeightmap(json heightmap) {
     BroadcastWebSocketMessage(serialized);
 }
 
+void CControllerAIServer::PublishSettings(json settings) {
+    std::string serialized;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        settingsCache = std::move(settings);
+        serialized = BuildWebSocketMessage("settings", settingsCache);
+    }
+    BroadcastWebSocketMessage(serialized);
+}
+
 json CControllerAIServer::GetSpawnBoxes() const {
     std::lock_guard<std::mutex> lock(snapshotMutex);
     return spawnBoxesCache;
+}
+
+json CControllerAIServer::GetSettings() const {
+    std::lock_guard<std::mutex> lock(snapshotMutex);
+    return settingsCache;
 }
 
 json CControllerAIServer::ExecuteQuery(json query) {
@@ -190,6 +246,36 @@ json CControllerAIServer::ExecuteQuery(json query) {
     return request->response;
 }
 
+json CControllerAIServer::ExecuteSettings(json settings) {
+    if (!running.load()) {
+        throw std::runtime_error("Server is not running.");
+    }
+
+    auto request = std::make_shared<SettingsRequest>();
+    request->settings = std::move(settings);
+
+    {
+        std::lock_guard<std::mutex> lock(settingsMutex);
+        settingsQueue.push(request);
+    }
+    commandCv.notify_all();
+
+    std::unique_lock<std::mutex> lock(request->mutex);
+    request->cv.wait(lock, [&]() {
+        return request->completed || !running.load();
+    });
+
+    if (!request->completed) {
+        throw std::runtime_error("Server stopped before the settings request completed.");
+    }
+
+    if (!request->error.empty()) {
+        throw std::runtime_error(request->error);
+    }
+
+    return request->response;
+}
+
 void CControllerAIServer::ProcessQueries(const std::function<json(const json&)>& handler) {
     std::vector<std::shared_ptr<QueryRequest>> pendingQueries;
     {
@@ -207,6 +293,27 @@ void CControllerAIServer::ProcessQueries(const std::function<json(const json&)>&
             CompleteQuery(request, json(), e.what());
         } catch (...) {
             CompleteQuery(request, json(), "Unknown query error.");
+        }
+    }
+}
+
+void CControllerAIServer::ProcessSettings(const std::function<json(const json&)>& handler) {
+    std::vector<std::shared_ptr<SettingsRequest>> pendingSettings;
+    {
+        std::lock_guard<std::mutex> lock(settingsMutex);
+        while (!settingsQueue.empty()) {
+            pendingSettings.push_back(settingsQueue.front());
+            settingsQueue.pop();
+        }
+    }
+
+    for (const auto& request : pendingSettings) {
+        try {
+            CompleteSettings(request, handler(request->settings));
+        } catch (const std::exception& e) {
+            CompleteSettings(request, json(), e.what());
+        } catch (...) {
+            CompleteSettings(request, json(), "Unknown settings error.");
         }
     }
 }
@@ -230,7 +337,12 @@ bool CControllerAIServer::WaitForWork() {
         }
 
         std::lock_guard<std::mutex> queryLock(queryMutex);
-        return !queryQueue.empty();
+        if (!queryQueue.empty()) {
+            return true;
+        }
+
+        std::lock_guard<std::mutex> settingsLock(settingsMutex);
+        return !settingsQueue.empty();
     });
 
     bool hasQueries = false;
@@ -239,7 +351,13 @@ bool CControllerAIServer::WaitForWork() {
         hasQueries = !queryQueue.empty();
     }
 
-    return running.load() || !commandQueue.empty() || hasQueries;
+    bool hasSettings = false;
+    {
+        std::lock_guard<std::mutex> settingsLock(settingsMutex);
+        hasSettings = !settingsQueue.empty();
+    }
+
+    return running.load() || !commandQueue.empty() || hasQueries || hasSettings;
 }
 
 void CControllerAIServer::EnqueueCommand(json command) {
@@ -291,6 +409,9 @@ void CControllerAIServer::SendCurrentStateToWebSocketSession(const std::shared_p
         if (!heightmapCache.empty()) {
             messages.push_back(BuildWebSocketMessage("heightmap", heightmapCache));
         }
+        if (!settingsCache.empty()) {
+            messages.push_back(BuildWebSocketMessage("settings", settingsCache));
+        }
         if (!lastObservationSerialized.empty()) {
             messages.push_back(BuildWebSocketMessage("observation", lastObservation));
         }
@@ -340,6 +461,8 @@ void CControllerAIServer::HandleWebSocketCommandOrRequest(const std::shared_ptr<
             response = mapFeaturesCache;
         } else if (type == "get_heightmap") {
             response = heightmapCache;
+        } else if (type == "get_settings") {
+            response = settingsCache;
         } else {
             handledRequest = false;
         }
@@ -384,6 +507,40 @@ void CControllerAIServer::HandleWebSocketCommandOrRequest(const std::shared_ptr<
                 error["requestId"] = requestId;
             }
             EnqueueWebSocketMessage(session, BuildWebSocketMessage("query_error", error));
+        }
+        return;
+    }
+
+    if (type == "set_settings") {
+        json settings = json::object();
+        if (payload.contains("settings") && payload["settings"].is_object()) {
+            settings = payload["settings"];
+        } else {
+            settings = payload;
+            settings.erase("type");
+        }
+
+        const json requestId = payload.contains("requestId") ? payload["requestId"] : json();
+        settings.erase("requestId");
+
+        try {
+            json response = ExecuteSettings(settings);
+            if (!requestId.is_null()) {
+                response = {
+                    {"requestId", requestId},
+                    {"settings", response}
+                };
+            }
+            EnqueueWebSocketMessage(session, BuildWebSocketMessage("settings_result", response));
+        } catch (const std::exception& e) {
+            json error = {
+                {"settings", settings},
+                {"message", e.what()}
+            };
+            if (!requestId.is_null()) {
+                error["requestId"] = requestId;
+            }
+            EnqueueWebSocketMessage(session, BuildWebSocketMessage("settings_error", error));
         }
         return;
     }
@@ -487,6 +644,20 @@ void CControllerAIServer::ConfigureRoutes() {
     svr.Get("/observation", [this](const httplib::Request&, httplib::Response& res) {
         std::lock_guard<std::mutex> lock(snapshotMutex);
         res.set_content(lastObservationSerialized.empty() ? lastObservation.dump() : lastObservationSerialized, "application/json");
+    });
+
+    svr.Get("/settings", [this](const httplib::Request&, httplib::Response& res) {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        res.set_content(settingsCache.dump(), "application/json");
+    });
+
+    svr.Post("/settings", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            res.set_content(ExecuteSettings(BuildHttpSettingsPayload(req)).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
     });
 
     svr.Get("/query", [this](const httplib::Request& req, httplib::Response& res) {

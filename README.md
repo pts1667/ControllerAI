@@ -5,11 +5,12 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 ## How it Works
 
 1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. It starts a background HTTP/WebSocket server on `localhost:3017`.
-2.  **Observation**: Every game frame (and during the pre-match phase), the AI updates its internal state. External services can either poll `/observation` or use `ws://localhost:3017/ws` as a bidirectional frame loop.
-3.  **WebSocket Bootstrap**: On connect, the WebSocket sends the cached startup data you would otherwise fetch from `/game_info`, `/spawn_boxes`, `/metadata`, `/map_features`, `/heightmap`, and then the latest observation if available.
+2.  **Observation**: During the pre-match phase the AI always updates its internal state immediately. After frame 0, observations are published every `block_n_frames` frames, so external services can either poll `/observation` or use `ws://localhost:3017/ws` as a bidirectional batched frame loop.
+3.  **WebSocket Bootstrap**: On connect, the WebSocket sends the cached startup data you would otherwise fetch from `/game_info`, `/spawn_boxes`, `/metadata`, `/map_features`, `/heightmap`, `/settings`, and then the latest observation if available.
 4.  **Commands**: External services POST JSON commands to `/command` or send the same JSON payloads on `/ws`. These are executed on the next engine update.
 5.  **Queries**: External services can call `GET /query` or send `type="query"` messages on `/ws` to execute engine-thread lookups such as full `UnitDef` serialization, resource spot lookups, and build-site checks without changing frame synchronization.
-6. **Synchronous Control**: By default, the engine can already block during startup handling so setup commands such as `set_commander`, `set_side`, and `set_start_pos` can be processed before the match proceeds. Before the first `EVENT_UPDATE`, the AI stays in a startup command loop. If the game requires choosing a start position, a valid `set_start_pos` unblocks startup. Otherwise, send `finish_frame` after your startup commands to let the match proceed. Once the game starts, it pauses at the end of every frame until you send a `finish_frame` command.
+6.  **Runtime Settings**: External services can call `GET /settings`, `POST /settings`, or use the matching WebSocket messages to change runtime behavior such as `block_n_frames`.
+7. **Synchronous Control**: By default, the engine can already block during startup handling so setup commands such as `set_commander`, `set_side`, and `set_start_pos` can be processed before the match proceeds. Before the first `EVENT_UPDATE`, the AI stays in a startup command loop. If the game requires choosing a start position, a valid `set_start_pos` unblocks startup. Otherwise, send `finish_frame` after your startup commands to let the match proceed. Once the game starts, it pauses at the end of each published observation batch until you send a `finish_frame` command.
 
 ## Configuration
 
@@ -25,9 +26,11 @@ You can configure the binding address and port through the engine's AI options (
 The server runs on `http://localhost:3017` and `ws://localhost:3017/ws`.
 
 ### 1. `GET /observation`
-Returns the current snapshot of the game state and events since the last poll.
+Returns the current snapshot of the game state and events accumulated since the last published observation.
 
 For simple integrations, polling this endpoint is still supported and unchanged.
+
+If `block_n_frames` is greater than `1`, the observation is refreshed every N post-start frames instead of every single frame. Startup observations are still published immediately.
 
 **Example Response:**
 ```json
@@ -73,13 +76,14 @@ Returns static data about all unit types available in the current game/mod.
 ### 1b. `GET /ws`
 Runs the full synchronous observation/command loop on a single WebSocket connection.
 
-- Sends cached `game_info`, `spawn_boxes`, `metadata`, `map_features`, `heightmap`, and then the latest observation immediately after connect when available.
-- Sends each subsequent observation when the engine publishes the next frame.
+- Sends cached `game_info`, `spawn_boxes`, `metadata`, `map_features`, `heightmap`, `settings`, and then the latest observation immediately after connect when available.
+- Sends each subsequent observation when the engine publishes the next configured batch.
 - Accepts the same JSON command payloads as `POST /command`.
 - Supports either one command per message or an array of command objects in a single message.
-- Supports websocket request messages for the HTTP resources: `get_all`, `get_observation`, `get_game_info`, `get_spawn_boxes`, `get_metadata`, `get_map_features`, and `get_heightmap`.
+- Supports websocket request messages for the HTTP resources: `get_all`, `get_observation`, `get_game_info`, `get_spawn_boxes`, `get_metadata`, `get_map_features`, `get_heightmap`, and `get_settings`.
+- Supports websocket settings updates with `{"type": "set_settings", "settings": {...}}` and replies with `settings_result` or `settings_error`.
 - Supports websocket query messages with `{"type": "query", "query": {...}}` and replies with `query_result` or `query_error`.
-- In synchronous mode, send commands for the current frame and end the batch with `finish_frame`. The next observation is sent after the engine resumes and publishes it.
+- In synchronous mode, send commands for the current published frame and end the batch with `finish_frame`. The next observation is sent after the engine resumes and reaches the next configured publish frame.
 
 Server-to-client WebSocket messages are wrapped as:
 
@@ -90,7 +94,7 @@ Server-to-client WebSocket messages are wrapped as:
 }
 ```
 
-The `type` field will be one of `game_info`, `spawn_boxes`, `metadata`, `map_features`, `heightmap`, `observation`, `query_result`, `query_error`, or `error`.
+The `type` field will be one of `game_info`, `spawn_boxes`, `metadata`, `map_features`, `heightmap`, `settings`, `settings_result`, `settings_error`, `observation`, `query_result`, `query_error`, or `error`.
 
 **Python WebSocket example:**
 ```python
@@ -132,6 +136,14 @@ def main():
 
             if msg_type == "query_result":
                 print("Query result:", data)
+                continue
+
+            if msg_type == "settings":
+                print("Current settings:", data)
+                continue
+
+            if msg_type == "settings_result":
+                print("Settings updated:", data)
                 continue
 
             if msg_type != "observation":
@@ -227,7 +239,34 @@ Returns resource spots and map features (trees, rocks, etc.).
 ### 6. `GET /heightmap`
 Returns the dynamic heightmap as a Base64 encoded string of `float32` values.
 
-### 7. `GET /query`
+### 7. `GET /settings`
+Returns the current runtime settings.
+
+**Example Response:**
+```json
+{
+    "block_n_frames": 1
+}
+```
+
+### 8. `POST /settings`
+Updates runtime settings.
+
+Supported settings:
+- `block_n_frames`: integer `>= 1`, default `1`. After startup, ControllerAI publishes an observation and blocks for commands every N frames instead of every single frame. Startup handling before frame 0 is unchanged.
+
+**Example Request:**
+```json
+{
+    "block_n_frames": 5
+}
+```
+
+**WebSocket equivalents:**
+- `{"type": "get_settings"}` returns a `settings` message.
+- `{"type": "set_settings", "settings": {"block_n_frames": 5}}` updates the settings and returns `settings_result`. All connected WebSocket clients also receive the updated broadcast `settings` message.
+
+### 9. `GET /query`
 Runs an engine-thread lookup and returns the result as JSON.
 
 This is the endpoint to use for data that is not already present in the observation or the cached startup endpoints. If the engine is currently blocked in startup sync or frame sync, the query wakes the AI just long enough to answer it and then immediately resumes the blocked state.
@@ -307,7 +346,7 @@ Successful WebSocket query responses look like this:
 }
 ```
 
-### 8. `POST /command`
+### 10. `POST /command`
 Sends a command to the engine. Standard fields: `unitId`, `type`, `pos`, `targetId`, `options`.
 
 This endpoint remains available for simple integrations or mixed HTTP/WebSocket clients. WebSocket clients can send the same command JSON messages on `/ws` instead and can fetch the same cached resources over WebSocket without touching the HTTP endpoints.

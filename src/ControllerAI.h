@@ -54,6 +54,8 @@ private:
     bool released;
     int blockNFrames;
 
+    void EnsureInterfacesInitialized();
+
     // Helper for event serialization
     json EventToJson(int topic, const void* data);
     

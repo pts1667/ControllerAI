@@ -54,26 +54,6 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback, std::string bindA
     released(false),
     blockNFrames(1)
 {
-    if (callback) {
-        game = std::unique_ptr<springai::Game>(callback->GetGame());
-        map = std::unique_ptr<springai::Map>(callback->GetMap());
-        log = std::unique_ptr<springai::Log>(callback->GetLog());
-        skirmishAI = std::unique_ptr<springai::SkirmishAI>(callback->GetSkirmishAI());
-        economy = std::unique_ptr<springai::Economy>(callback->GetEconomy());
-        lua = std::unique_ptr<springai::Lua>(callback->GetLua());
-        mod = std::unique_ptr<springai::Mod>(callback->GetMod());
-    }
-
-    if (skirmishAI) {
-        springai::OptionValues* options = skirmishAI->GetOptionValues();
-        if (options) {
-            const char* sync_opt = options->GetValueByKey("sync");
-            if (sync_opt != nullptr) {
-                synchronousMode = (std::string(sync_opt) == "true");
-            }
-        }
-    }
-
     server = std::make_unique<CControllerAIServer>(bindAddress, port);
 
     server->Start();
@@ -82,6 +62,43 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback, std::string bindA
 
 CControllerAI::~CControllerAI() {
     Release(0);
+}
+
+void CControllerAI::EnsureInterfacesInitialized() {
+    if (!callback) {
+        return;
+    }
+
+    if (!game) {
+        game = std::unique_ptr<springai::Game>(callback->GetGame());
+    }
+    if (!map) {
+        map = std::unique_ptr<springai::Map>(callback->GetMap());
+    }
+    if (!log) {
+        log = std::unique_ptr<springai::Log>(callback->GetLog());
+    }
+    if (!skirmishAI) {
+        skirmishAI = std::unique_ptr<springai::SkirmishAI>(callback->GetSkirmishAI());
+        if (skirmishAI) {
+            springai::OptionValues* options = skirmishAI->GetOptionValues();
+            if (options) {
+                const char* syncOpt = options->GetValueByKey("sync");
+                if (syncOpt != nullptr) {
+                    synchronousMode = (std::string(syncOpt) == "true");
+                }
+            }
+        }
+    }
+    if (!economy) {
+        economy = std::unique_ptr<springai::Economy>(callback->GetEconomy());
+    }
+    if (!lua) {
+        lua = std::unique_ptr<springai::Lua>(callback->GetLua());
+    }
+    if (!mod) {
+        mod = std::unique_ptr<springai::Mod>(callback->GetMod());
+    }
 }
 
 void CControllerAI::CacheStaticData() {
@@ -1504,6 +1521,10 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
 
     if (released && topic != EVENT_RELEASE) {
         return 0;
+    }
+
+    if (topic != EVENT_RELEASE) {
+        EnsureInterfacesInitialized();
     }
 
     if (topic != EVENT_RELEASE) {

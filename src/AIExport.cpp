@@ -309,6 +309,7 @@ EXPORT(int) init(int skirmishAIId, const struct SSkirmishAICallback* innerCallba
 	springai::OOAICallback* callbackForLogging = nullptr;
 
 	try {
+		LogExportMessage("ControllerAI init: begin");
 		auto clb = std::unique_ptr<springai::OOAICallback>(springai::WrappOOAICallback::GetInstance(innerCallback, skirmishAIId));
 		callbackForLogging = clb.get();
 		auto skirmishAI = std::unique_ptr<springai::SkirmishAI>(clb ? clb->GetSkirmishAI() : nullptr);
@@ -338,6 +339,7 @@ EXPORT(int) init(int skirmishAIId, const struct SSkirmishAICallback* innerCallba
 			bindAddress,
 			masterPort
 		);
+		LogExportMessage("ControllerAI init: reserved instance port " + std::to_string(registration.instancePort) + " for team " + std::to_string(registration.teamId));
 
 		try {
 			auto ai = std::unique_ptr<controllerai::CControllerAI>(new controllerai::CControllerAI(
@@ -346,12 +348,16 @@ EXPORT(int) init(int skirmishAIId, const struct SSkirmishAICallback* innerCallba
 				registration.instancePort,
 				registration.masterPort
 			));
+			LogExportMessage("ControllerAI init: constructor returned for skirmish AI " + std::to_string(skirmishAIId));
 
 			CMasterRegistryServer::GetInstance().CommitInstance(skirmishAIId);
+			LogExportMessage("ControllerAI init: committed registry entry for skirmish AI " + std::to_string(skirmishAIId));
 			myAIs[skirmishAIId] = ai.release();
 			myAICallbacks[skirmishAIId] = clb.release();
+			LogExportMessage("ControllerAI init: completed successfully for skirmish AI " + std::to_string(skirmishAIId));
 		} catch (...) {
 			CMasterRegistryServer::GetInstance().RollbackInstance(skirmishAIId);
+			LogExportMessage("ControllerAI init: rolled back registry entry for skirmish AI " + std::to_string(skirmishAIId));
 			throw;
 		}
 

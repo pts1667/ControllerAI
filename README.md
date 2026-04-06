@@ -4,7 +4,7 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 
 ## How it Works
 
-1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. It starts a background HTTP/WebSocket server on `localhost:3017`.
+1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. In matches with one or more ControllerAI instances, it starts a shared master HTTP server on the configured port and one per-instance HTTP/WebSocket server on a derived port for each controlled team.
 2.  **Observation**: During the pre-match phase the AI always updates its internal state immediately. After frame 0, observations are published every `block_n_frames` frames, so external services can either poll `/observation` or use `ws://localhost:3017/ws` as a bidirectional batched frame loop.
 3.  **WebSocket Bootstrap**: On connect, the WebSocket sends the cached startup data you would otherwise fetch from `/game_info`, `/spawn_boxes`, `/metadata`, `/map_features`, `/heightmap`, `/settings`, and then the latest observation if available.
 4.  **Commands**: External services POST JSON commands to `/command` or send the same JSON payloads on `/ws`. These are executed on the next engine update.
@@ -17,13 +17,42 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 You can configure the binding address and port through the engine's AI options (typically in the game setup or `AIOptions.lua`):
 
 - **Binding Address (`ip`)**: The IP the server binds to. Default: `127.0.0.1`.
-- **Server Port (`port`)**: The port the server listens on. Default: `3017`.
+- **Server Port (`port`)**: The master discovery port. ControllerAI serves `/list` on this port and allocates per-instance servers from the next available ports above it. Default: `3017`.
 - **Synchronous Mode (`sync`)**: If `true`, the engine thread blocks at the end of every update until a `finish_frame` command is received. **Default: `true`**. Note that setup-phase blocking (frame -1) is mandatory regardless of this setting if the map requires choosing a start position.
 
 
 ## API Endpoints
 
-The server runs on `http://localhost:3017` and `ws://localhost:3017/ws`.
+The configured `port` hosts the master discovery endpoint `http://localhost:<port>/list`.
+
+Each actual ControllerAI instance then runs its own HTTP/WebSocket server on a derived port, typically `port + 1`, `port + 2`, and so on. Use `/list` to discover the endpoint for the team you want to control, then use that returned per-instance base URL for `/observation`, `/ws`, `/settings`, `/query`, and `/command`.
+
+### 0. `GET /list`
+Returns the live team ID to instance endpoint table for all active ControllerAI instances in the current match.
+
+**Example Response:**
+```json
+{
+    "0": {
+        "address": "127.0.0.1",
+        "port": 3018,
+        "endpoint": "127.0.0.1:3018",
+        "httpUrl": "http://127.0.0.1:3018",
+        "wsUrl": "ws://127.0.0.1:3018/ws",
+        "skirmishAIId": 3
+    },
+    "1": {
+        "address": "127.0.0.1",
+        "port": 3019,
+        "endpoint": "127.0.0.1:3019",
+        "httpUrl": "http://127.0.0.1:3019",
+        "wsUrl": "ws://127.0.0.1:3019/ws",
+        "skirmishAIId": 4
+    }
+}
+```
+
+The top-level keys are team IDs, which are the identifiers external AI services typically already know.
 
 ### 1. `GET /observation`
 Returns the current snapshot of the game state and events accumulated since the last published observation.
@@ -217,19 +246,26 @@ Typical startup flow:
 **Example Response:**
 ```json
 {
-  "modName": "Balanced Annihilation",
-  "mapName": "TitanDuel 2.2",
-  "mapWidth": 1024,
-  "mapHeight": 1024,
-  "mapWidthElmos": 8192,
-  "mapHeightElmos": 8192,
-  "gameMode": 0,
-  "isPaused": true,
-  "canChooseStartPos": true,
-  "supportsWebsocketApi": true,
-  "websocketPath": "/ws",
-  "supportsWebsocketObservation": true,
-  "websocketObservationPath": "/ws"
+    "modName": "Balanced Annihilation",
+    "mapName": "TitanDuel 2.2",
+    "mapWidth": 1024,
+    "mapHeight": 1024,
+    "mapWidthElmos": 8192,
+    "mapHeightElmos": 8192,
+    "teamId": 0,
+    "allyTeamId": 0,
+    "serverAddress": "127.0.0.1",
+    "serverPort": 3018,
+    "masterServerAddress": "127.0.0.1",
+    "masterServerPort": 3017,
+    "masterListPath": "/list",
+    "gameMode": 0,
+    "isPaused": true,
+    "canChooseStartPos": true,
+    "supportsWebsocketApi": true,
+    "websocketPath": "/ws",
+    "supportsWebsocketObservation": true,
+    "websocketObservationPath": "/ws"
 }
 ```
 

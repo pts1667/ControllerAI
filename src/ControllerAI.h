@@ -40,6 +40,7 @@ private:
     // HTTP Server
     std::string bindAddress;
     int port;
+    int masterPort;
     std::unique_ptr<CControllerAIServer> server;
 
     // State management
@@ -97,7 +98,7 @@ private:
     std::string Base64Encode(const unsigned char* data, size_t len);
 
 public:
-    CControllerAI(springai::OOAICallback* callback);
+    CControllerAI(springai::OOAICallback* callback, std::string bindAddress, int port, int masterPort);
     ~CControllerAI();
 
     int HandleEvent(int topic, const void* data);

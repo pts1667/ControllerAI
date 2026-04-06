@@ -6,7 +6,7 @@ local options = {
 	{
 		key    = 'server_section',
 		name   = 'External Server Settings',
-		desc   = 'Configure the binding address and port for the external AI communication layer.',
+		desc   = 'Configure the binding address and master discovery port for the external AI communication layer.',
 		type   = 'section',
 	},
 	{
@@ -19,8 +19,8 @@ local options = {
 	},
 	{
 		key     = 'port',
-		name    = 'Server Port',
-		desc    = 'The port the HTTP/WebSocket server will listen on.',
+		name    = 'Master Server Port',
+		desc    = 'The port the shared /list discovery server listens on. Individual ControllerAI instances use derived ports above this value.',
 		type    = 'number',
 		section = 'server_section',
 		def     = 3017,

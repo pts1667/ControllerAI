@@ -37,11 +37,12 @@
 
 namespace controllerai {
 
-CControllerAI::CControllerAI(springai::OOAICallback* callback) :
+CControllerAI::CControllerAI(springai::OOAICallback* callback, std::string bindAddress, int port, int masterPort) :
     callback(callback),
     skirmishAIId(callback != nullptr ? callback->GetSkirmishAIId() : -1),
-    bindAddress("127.0.0.1"),
-    port(3017),
+    bindAddress(std::move(bindAddress)),
+    port(port),
+    masterPort(masterPort),
     server(nullptr),
     eventBuffer(json::array()),
     running(true),
@@ -66,16 +67,6 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback) :
     if (skirmishAI) {
         springai::OptionValues* options = skirmishAI->GetOptionValues();
         if (options) {
-            const char* ip_opt = options->GetValueByKey("ip");
-            if (ip_opt != nullptr) {
-                bindAddress = ip_opt;
-            }
-
-            const char* port_opt = options->GetValueByKey("port");
-            if (port_opt != nullptr) {
-                port = std::stoi(port_opt);
-            }
-
             const char* sync_opt = options->GetValueByKey("sync");
             if (sync_opt != nullptr) {
                 synchronousMode = (std::string(sync_opt) == "true");
@@ -120,12 +111,19 @@ void CControllerAI::CacheStaticData() {
     if (game) {
         gameInfoCache["gameMode"] = -1;
         gameInfoCache["isPaused"] = game->IsPaused();
+        gameInfoCache["teamId"] = game->GetMyTeam();
+        gameInfoCache["allyTeamId"] = game->GetMyAllyTeam();
 
         script = SafeCString(game->GetSetupScript());
         canChooseStartPos = (script.find("startpostype=1") != std::string::npos);
         setupComplete = !canChooseStartPos;
         startupBlocking = true;
     }
+    gameInfoCache["serverAddress"] = bindAddress;
+    gameInfoCache["serverPort"] = port;
+    gameInfoCache["masterServerAddress"] = bindAddress;
+    gameInfoCache["masterServerPort"] = masterPort;
+    gameInfoCache["masterListPath"] = "/list";
     gameInfoCache["canChooseStartPos"] = canChooseStartPos;
     gameInfoCache["supportsWebsocketApi"] = true;
     gameInfoCache["websocketPath"] = "/ws";

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <utility>
 
 namespace controllerai {
@@ -82,6 +83,37 @@ void CControllerAIServer::Start() {
 
     ConfigureRoutes();
     serverThread = std::thread(&CControllerAIServer::Run, this);
+
+    std::string probeAddress = bindAddress;
+    if (probeAddress == "0.0.0.0" || probeAddress == "::" || probeAddress == "[::]") {
+        probeAddress = "127.0.0.1";
+    }
+
+    httplib::Client client(probeAddress, port);
+    client.set_connection_timeout(0, 100000);
+    client.set_read_timeout(0, 100000);
+    client.set_write_timeout(0, 100000);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!running.load()) {
+            if (serverThread.joinable()) {
+                serverThread.join();
+            }
+            throw std::runtime_error("ControllerAI server failed to start listening on " + bindAddress + ":" + std::to_string(port));
+        }
+
+        if (auto response = client.Get("/observation")) {
+            if (response->status == 200) {
+                return;
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    Stop();
+    throw std::runtime_error("Timed out waiting for ControllerAI server to accept connections on " + bindAddress + ":" + std::to_string(port));
 }
 
 void CControllerAIServer::Stop() {

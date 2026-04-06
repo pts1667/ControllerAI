@@ -13,6 +13,7 @@
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -24,6 +25,37 @@
 namespace {
 
 using json = nlohmann::json;
+
+std::string NormalizeProbeAddress(const std::string& bindAddress) {
+	if (bindAddress == "0.0.0.0" || bindAddress == "::" || bindAddress == "[::]") {
+		return "127.0.0.1";
+	}
+
+	return bindAddress;
+}
+
+bool ProbeInstanceEndpoint(const std::string& bindAddress, int port) {
+	httplib::Client client(NormalizeProbeAddress(bindAddress), port);
+	client.set_connection_timeout(0, 200000);
+	client.set_read_timeout(0, 200000);
+	client.set_write_timeout(0, 200000);
+
+	auto response = client.Get("/observation");
+	return response && response->status == 200;
+}
+
+bool WaitForInstanceEndpoint(const std::string& bindAddress, int port, std::chrono::milliseconds timeout) {
+	const auto deadline = std::chrono::steady_clock::now() + timeout;
+	while (std::chrono::steady_clock::now() < deadline) {
+		if (ProbeInstanceEndpoint(bindAddress, port)) {
+			return true;
+		}
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(25));
+	}
+
+	return ProbeInstanceEndpoint(bindAddress, port);
+}
 
 struct InstanceRegistration {
 	std::string bindAddress;
@@ -117,8 +149,15 @@ private:
 
 	CMasterRegistryServer() : configuredMasterPort(-1), masterServerRunning(false) {
 		masterServer.Get("/list", [this](const httplib::Request&, httplib::Response& res) {
-			std::lock_guard<std::mutex> lock(mutex);
-			res.set_content(BuildRegistryJsonLocked().dump(), "application/json");
+			std::vector<RegistryEntry> entries;
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				for (const auto& pair : activeEntries) {
+					entries.push_back(pair.second);
+				}
+			}
+
+			res.set_content(BuildRegistryJson(entries).dump(), "application/json");
 		});
 	}
 
@@ -214,10 +253,12 @@ private:
 		masterServerRunning = false;
 	}
 
-	json BuildRegistryJsonLocked() const {
-		json entries = json::object();
-		for (const auto& pair : activeEntries) {
-			const RegistryEntry& entry = pair.second;
+	json BuildRegistryJson(const std::vector<RegistryEntry>& registryEntries) const {
+		json jsonEntries = json::object();
+		for (const RegistryEntry& entry : registryEntries) {
+			if (!ProbeInstanceEndpoint(entry.bindAddress, entry.instancePort)) {
+				continue;
+			}
 
 			std::ostringstream httpUrl;
 			httpUrl << "http://" << entry.bindAddress << ":" << entry.instancePort;
@@ -228,7 +269,7 @@ private:
 			std::ostringstream endpoint;
 			endpoint << entry.bindAddress << ":" << entry.instancePort;
 
-			entries[std::to_string(entry.teamId)] = {
+			jsonEntries[std::to_string(entry.teamId)] = {
 				{"address", entry.bindAddress},
 				{"port", entry.instancePort},
 				{"endpoint", endpoint.str()},
@@ -238,7 +279,7 @@ private:
 			};
 		}
 
-		return entries;
+		return jsonEntries;
 	}
 
 	mutable std::mutex mutex;
@@ -312,6 +353,10 @@ EXPORT(int) init(int skirmishAIId, const struct SSkirmishAICallback* innerCallba
 				registration.instancePort,
 				registration.masterPort
 			));
+
+			if (!WaitForInstanceEndpoint(registration.bindAddress, registration.instancePort, std::chrono::seconds(5))) {
+				throw std::runtime_error("ControllerAI: instance server did not become reachable after init.");
+			}
 
 			CMasterRegistryServer::GetInstance().CommitInstance(skirmishAIId);
 			myAIs[skirmishAIId] = ai.release();

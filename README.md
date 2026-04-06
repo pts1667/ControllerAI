@@ -1,6 +1,182 @@
 # ControllerAI: External AI Communication Layer
 
-ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that acts as a bridge between the game engine and external services. It exposes the game state via a RESTful API, streams observations over WebSocket, and accepts commands in JSON format, allowing you to write RTS AIs in any language (Python, Node.js, Rust, etc.) without compiling C++ code.
+ControllerAI is an AI for Zero-K/BAR that starts a server from which you can controller your AI.
+Each AI gets its own server. First poll the master server to get the actual list of ControllerAIs.
+You will need to know the team ID list ahead of time, but you can get this from the start script when the match is started.
+
+## AI Disclaimer
+
+Made with Codex (GPT-5.4 and GPT-5.4-Mini).
+Would've probably been faster to code this manually... this will be my last "vibe code" project, I think.
+
+## Example
+
+```python
+import json
+import time
+
+import requests
+from websocket import (
+    WebSocketConnectionClosedException,
+    WebSocketTimeoutException,
+    create_connection,
+)
+
+MASTER_URL = "http://127.0.0.1:3017"
+DISCOVERY_INTERVAL_SEC = 1.0
+SOCKET_TIMEOUT_SEC = 0.1
+
+
+def discover_instances():
+    response = requests.get(f"{MASTER_URL}/list")
+    response.raise_for_status()
+    return response.json()
+
+
+def make_state():
+    return {
+        "game_info": None,
+        "spawn_boxes": None,
+        "metadata": None,
+        "map_features": None,
+        "heightmap": None,
+        "startup_complete": False,
+    }
+
+
+def send(ws, payload):
+    ws.send(json.dumps(payload))
+
+
+def connect_new_instances(clients):
+    for team_id, instance in discover_instances().items():
+        if team_id in clients or not instance.get("reachable", True):
+            continue
+
+        try:
+            ws = create_connection(instance["wsUrl"], timeout=SOCKET_TIMEOUT_SEC)
+            ws.settimeout(SOCKET_TIMEOUT_SEC)
+        except OSError as exc:
+            print(f"team {team_id}: connect failed: {exc}")
+            continue
+
+        clients[team_id] = {
+            "ws": ws,
+            "state": make_state(),
+        }
+        print(f"Connected to team {team_id} at {instance['wsUrl']}")
+
+
+def handle_message(team_id, client, message):
+    ws = client["ws"]
+    state = client["state"]
+    msg_type = message["type"]
+    data = message["data"]
+
+    if msg_type in {"game_info", "spawn_boxes", "metadata", "map_features", "heightmap"}:
+        state[msg_type] = data
+        return
+
+    if msg_type == "error":
+        print(f"team {team_id}: server error: {data}")
+        return
+
+    if msg_type == "query_result":
+        print(f"team {team_id}: query result: {data}")
+        return
+
+    if msg_type == "settings":
+        print(f"team {team_id}: current settings: {data}")
+        return
+
+    if msg_type == "settings_result":
+        print(f"team {team_id}: settings updated: {data}")
+        return
+
+    if msg_type != "observation":
+        return
+
+    frame = data["frame"]
+    print(f"team {team_id}: frame {frame}")
+
+    if not state["startup_complete"] and frame < 0:
+        send(ws, {"type": "set_commander", "name": "dyntrainer_strike_base"})
+
+        game_info = state["game_info"] or {}
+        if game_info.get("canChooseStartPos"):
+            boxes = state["spawn_boxes"] or {}
+            ally_box = boxes.get(str(data["allyTeamId"]))
+            if ally_box:
+                cx = (ally_box["left"] + ally_box["right"]) / 2
+                cz = (ally_box["top"] + ally_box["bottom"]) / 2
+                send(ws, {"type": "set_start_pos", "pos": [cx, 0, cz]})
+            else:
+                raise RuntimeError(f"team {team_id}: missing spawn box for ally team")
+        else:
+            send(ws, {"type": "finish_frame"})
+
+        state["startup_complete"] = True
+        return
+
+    for unit_id in data["units"]:
+        send(ws, {
+            "type": "move",
+            "unitId": int(unit_id),
+            "pos": [1000, 0, 1000],
+        })
+
+    if data["units"]:
+        first_unit_id = int(next(iter(data["units"])))
+        send(ws, {
+            "type": "query",
+            "requestId": f"unitdef-{team_id}-{first_unit_id}",
+            "query": {
+                "type": "unit_def_by_unit_id",
+                "unitId": first_unit_id,
+            },
+        })
+
+    send(ws, {"type": "finish_frame"})
+
+
+def main():
+    clients = {}
+    next_discovery_at = 0.0
+
+    try:
+        while True:
+            now = time.time()
+            if now >= next_discovery_at:
+                try:
+                    connect_new_instances(clients)
+                except requests.RequestException as exc:
+                    print(f"master discovery failed: {exc}")
+                next_discovery_at = now + DISCOVERY_INTERVAL_SEC
+
+            for team_id in list(clients):
+                client = clients[team_id]
+                ws = client["ws"]
+                try:
+                    raw_message = ws.recv()
+                except WebSocketTimeoutException:
+                    continue
+                except WebSocketConnectionClosedException:
+                    print(f"team {team_id}: disconnected")
+                    ws.close()
+                    del clients[team_id]
+                    continue
+
+                handle_message(team_id, client, json.loads(raw_message))
+    finally:
+        for client in clients.values():
+            client["ws"].close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+This example polls the master `/list` endpoint once per second, opens one WebSocket per reachable team, and keeps checking for newly listed AIs while the match is running.
 
 ## How it Works
 
@@ -127,108 +303,6 @@ Server-to-client WebSocket messages are wrapped as:
 ```
 
 The `type` field will be one of `game_info`, `spawn_boxes`, `metadata`, `map_features`, `heightmap`, `settings`, `settings_result`, `settings_error`, `observation`, `query_result`, `query_error`, or `error`.
-
-**Python WebSocket example:**
-```python
-import json
-
-from websocket import create_connection
-
-WS_URL = "ws://127.0.0.1:3018/ws"
-
-
-def send(ws, payload):
-    ws.send(json.dumps(payload))
-
-
-def main():
-    ws = create_connection(WS_URL)
-    state = {
-        "game_info": None,
-        "spawn_boxes": None,
-        "metadata": None,
-        "map_features": None,
-        "heightmap": None,
-        "startup_complete": False,
-    }
-
-    try:
-        while True:
-            message = json.loads(ws.recv())
-            msg_type = message["type"]
-            data = message["data"]
-
-            if msg_type in {"game_info", "spawn_boxes", "metadata", "map_features", "heightmap"}:
-                state[msg_type] = data
-                continue
-
-            if msg_type == "error":
-                print("Server error:", data)
-                continue
-
-            if msg_type == "query_result":
-                print("Query result:", data)
-                continue
-
-            if msg_type == "settings":
-                print("Current settings:", data)
-                continue
-
-            if msg_type == "settings_result":
-                print("Settings updated:", data)
-                continue
-
-            if msg_type != "observation":
-                continue
-
-            frame = data["frame"]
-            print("frame", frame)
-
-            if not state["startup_complete"] and frame < 0:
-                send(ws, {"type": "set_commander", "name": "dyntrainer_strike_base"})
-
-                game_info = state["game_info"] or {}
-                if game_info.get("canChooseStartPos"):
-                    boxes = state["spawn_boxes"] or {}
-                    ally_box = boxes.get(str(data["allyTeamId"]))
-                    if ally_box:
-                        cx = (ally_box["left"] + ally_box["right"]) / 2
-                        cz = (ally_box["top"] + ally_box["bottom"]) / 2
-                        send(ws, {"type": "set_start_pos", "pos": [cx, 0, cz]})
-                    else:
-                        raise RuntimeError("Missing spawn box for ally team")
-                else:
-                    send(ws, {"type": "finish_frame"})
-
-                state["startup_complete"] = True
-                continue
-
-            for unit_id in data["units"]:
-                send(ws, {
-                    "type": "move",
-                    "unitId": int(unit_id),
-                    "pos": [1000, 0, 1000],
-                })
-
-            if data["units"]:
-                first_unit_id = int(next(iter(data["units"])))
-                send(ws, {
-                    "type": "query",
-                    "requestId": f"unitdef-{first_unit_id}",
-                    "query": {
-                        "type": "unit_def_by_unit_id",
-                        "unitId": first_unit_id,
-                    },
-                })
-
-            send(ws, {"type": "finish_frame"})
-    finally:
-        ws.close()
-
-
-if __name__ == "__main__":
-    main()
-```
 
 ### 3. `GET /spawn_boxes`
 Returns the defined start boxes for each ally team.

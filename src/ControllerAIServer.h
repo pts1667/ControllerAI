@@ -23,7 +23,6 @@ public:
     CControllerAIServer(std::string bindAddress, int port);
     ~CControllerAIServer();
 
-    void SetLogger(std::function<void(const std::string&)> logger);
     void Start();
     void Stop();
 
@@ -85,7 +84,6 @@ private:
     void HandleWebSocketPayload(const std::shared_ptr<WebSocketSession>& session, json payload);
     void HandleWebSocketCommandOrRequest(const std::shared_ptr<WebSocketSession>& session, json payload);
     void RemoveWebSocketSession(const std::shared_ptr<WebSocketSession>& session);
-    void Trace(const std::string& message) const;
 
     std::string bindAddress;
     int port;
@@ -106,9 +104,6 @@ private:
 
     std::mutex websocketMutex;
     std::vector<std::shared_ptr<WebSocketSession>> websocketSessions;
-    std::function<void(const std::string&)> logger;
-    std::atomic<bool> firstObservationRequestLogged;
-    std::atomic<bool> firstObservationResponseLogged;
 
     std::mutex commandMutex;
     std::condition_variable commandCv;

@@ -5,7 +5,7 @@ ControllerAI is a specialized AI module for the Recoil Engine (SpringRTS) that a
 ## How it Works
 
 1.  **Engine Side**: ControllerAI runs as a standard Skirmish AI. In matches with one or more ControllerAI instances, it starts a shared master HTTP server on the configured port and one per-instance HTTP/WebSocket server on a derived port for each controlled team.
-2.  **Observation**: During the pre-match phase the AI always updates its internal state immediately. After frame 0, observations are published every `block_n_frames` frames, so external services can either poll `/observation` or use `ws://localhost:3017/ws` as a bidirectional batched frame loop.
+2.  **Observation**: During the pre-match phase the AI always updates its internal state immediately. After frame 0, observations are published every `block_n_frames` frames, so external services can either poll the per-instance `/observation` endpoint or use the per-instance `/ws` endpoint as a bidirectional batched frame loop.
 3.  **WebSocket Bootstrap**: On connect, the WebSocket sends the cached startup data you would otherwise fetch from `/game_info`, `/spawn_boxes`, `/metadata`, `/map_features`, `/heightmap`, `/settings`, and then the latest observation if available.
 4.  **Commands**: External services POST JSON commands to `/command` or send the same JSON payloads on `/ws`. These are executed on the next engine update.
 5.  **Queries**: External services can call `GET /query` or send `type="query"` messages on `/ws` to execute engine-thread lookups such as full `UnitDef` serialization, resource spot lookups, and build-site checks without changing frame synchronization.
@@ -36,6 +36,7 @@ Returns the live team ID to instance endpoint table for all active ControllerAI 
     "0": {
         "address": "127.0.0.1",
         "port": 3018,
+        "reachable": true,
         "endpoint": "127.0.0.1:3018",
         "httpUrl": "http://127.0.0.1:3018",
         "wsUrl": "ws://127.0.0.1:3018/ws",
@@ -44,6 +45,7 @@ Returns the live team ID to instance endpoint table for all active ControllerAI 
     "1": {
         "address": "127.0.0.1",
         "port": 3019,
+        "reachable": true,
         "endpoint": "127.0.0.1:3019",
         "httpUrl": "http://127.0.0.1:3019",
         "wsUrl": "ws://127.0.0.1:3019/ws",
@@ -54,10 +56,11 @@ Returns the live team ID to instance endpoint table for all active ControllerAI 
 
 The top-level keys are team IDs, which are the identifiers external AI services typically already know.
 
+`reachable` reports whether the master server's probe of the per-instance `/observation` endpoint succeeded when `/list` was generated. Entries remain visible even when `reachable` is `false`, so startup clients can still discover the instance and retry the per-instance connection.
+
 ### 1. `GET /observation`
 Returns the current snapshot of the game state and events accumulated since the last published observation.
-
-For simple integrations, polling this endpoint is still supported and unchanged.
+For simple integrations, polling this endpoint is supported.
 
 If `block_n_frames` is greater than `1`, the observation is refreshed every N post-start frames instead of every single frame. Startup observations are still published immediately.
 
@@ -131,7 +134,7 @@ import json
 
 from websocket import create_connection
 
-WS_URL = "ws://127.0.0.1:3017/ws"
+WS_URL = "ws://127.0.0.1:3018/ws"
 
 
 def send(ws, payload):
@@ -407,20 +410,34 @@ This example shows the HTTP fallback flow. The README examples use Python consis
 import requests
 import time
 
-URL = "http://localhost:3017"
+MASTER_URL = "http://localhost:3017"
 
 
-def post_command(payload):
-    requests.post(f"{URL}/command", json=payload).raise_for_status()
+def discover_instance(team_id):
+    while True:
+        listing = requests.get(f"{MASTER_URL}/list")
+        listing.raise_for_status()
+        listing = listing.json()
+
+        instance = listing.get(str(team_id))
+        if instance:
+            return instance["httpUrl"]
+
+        time.sleep(0.5)
+
+
+def post_command(base_url, payload):
+    requests.post(f"{base_url}/command", json=payload).raise_for_status()
 
 
 def main():
     print("Waiting for match initialization...")
+    url = discover_instance(team_id=0)
 
     # 1. Initialization Phase
     while True:
         try:
-            obs = requests.get(f"{URL}/observation")
+            obs = requests.get(f"{url}/observation")
             obs.raise_for_status()
             obs = obs.json()
             break
@@ -430,19 +447,19 @@ def main():
     print(f"Match Loaded. My AllyTeam: {obs['allyTeamId']}")
 
     # 2. Match Start: Read startup metadata and choose setup
-    info = requests.get(f"{URL}/game_info")
+    info = requests.get(f"{url}/game_info")
     info.raise_for_status()
     info = info.json()
     print(f"Map: {info['mapName']} | Mode: {info['gameMode']} | CanChooseStartPos: {info['canChooseStartPos']}")
 
     # Startup commands can be sent before the first frame update.
-    post_command({
+    post_command(url, {
         "type": "set_commander",
         "name": "dyntrainer_strike_base"
     })
 
     if info["canChooseStartPos"]:
-        boxes = requests.get(f"{URL}/spawn_boxes")
+        boxes = requests.get(f"{url}/spawn_boxes")
         boxes.raise_for_status()
         boxes = boxes.json()
         my_box = boxes.get(str(obs['allyTeamId']))
@@ -451,20 +468,20 @@ def main():
             cx = (my_box['left'] + my_box['right']) / 2
             cz = (my_box['top'] + my_box['bottom']) / 2
             print(f"Setting start position: {cx}, {cz}")
-            post_command({
+            post_command(url, {
                 "type": "set_start_pos",
                 "pos": [cx, 0, cz]
             })
         else:
             raise RuntimeError("Missing spawn box for ally team")
     else:
-        post_command({
+        post_command(url, {
             "type": "finish_frame"
         })
 
     # 3. Game Loop (Synchronous)
     while True:
-        obs = requests.get(f"{URL}/observation")
+        obs = requests.get(f"{url}/observation")
         obs.raise_for_status()
         obs = obs.json()
         frame = obs['frame']
@@ -476,7 +493,7 @@ def main():
         if obs['units']:
             first_unit_id = int(next(iter(obs['units'])))
             unit_def = requests.get(
-                f"{URL}/query",
+                f"{url}/query",
                 params={"type": "unit_def_by_unit_id", "unitId": first_unit_id},
             )
             unit_def.raise_for_status()
@@ -485,12 +502,12 @@ def main():
 
         # Move units if any exist
         for uid in obs['units']:
-            post_command({
+            post_command(url, {
                 "type": "move", "unitId": int(uid), "pos": [1000, 0, 1000]
             })
 
         # 4. Advance to next frame
-        post_command({"type": "finish_frame"})
+        post_command(url, {"type": "finish_frame"})
 
 if __name__ == "__main__":
     main()

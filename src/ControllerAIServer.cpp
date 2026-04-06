@@ -18,25 +18,12 @@ CControllerAIServer::CControllerAIServer(std::string bindAddress, int port) :
     spawnBoxesCache(json::object()),
     mapFeaturesCache(json::object()),
     heightmapCache(json::object()),
-    settingsCache(json::object()),
-    logger(),
-    firstObservationRequestLogged(false),
-    firstObservationResponseLogged(false)
+    settingsCache(json::object())
 {
 }
 
 CControllerAIServer::~CControllerAIServer() {
     Stop();
-}
-
-void CControllerAIServer::SetLogger(std::function<void(const std::string&)> traceLogger) {
-    logger = std::move(traceLogger);
-}
-
-void CControllerAIServer::Trace(const std::string& message) const {
-    if (logger) {
-        logger(std::string("[ControllerAIServer] ") + message);
-    }
 }
 
 std::string CControllerAIServer::BuildWebSocketMessage(const std::string& type, const json& data) const {
@@ -656,18 +643,8 @@ void CControllerAIServer::ConfigureRoutes() {
     });
 
     svr.Get("/observation", [this](const httplib::Request&, httplib::Response& res) {
-        bool expected = false;
-        if (firstObservationRequestLogged.compare_exchange_strong(expected, true)) {
-            Trace("first /observation request received");
-        }
-
         std::lock_guard<std::mutex> lock(snapshotMutex);
         res.set_content(lastObservationSerialized.empty() ? lastObservation.dump() : lastObservationSerialized, "application/json");
-
-        expected = false;
-        if (firstObservationResponseLogged.compare_exchange_strong(expected, true)) {
-            Trace("first /observation response serialized");
-        }
     });
 
     svr.Get("/settings", [this](const httplib::Request&, httplib::Response& res) {
@@ -743,9 +720,7 @@ void CControllerAIServer::ConfigureRoutes() {
 }
 
 void CControllerAIServer::Run() {
-    Trace("listen starting on " + bindAddress + ":" + std::to_string(port));
     svr.listen(bindAddress.c_str(), port);
-    Trace("listen returned on " + bindAddress + ":" + std::to_string(port));
     running.store(false);
     commandCv.notify_all();
 }

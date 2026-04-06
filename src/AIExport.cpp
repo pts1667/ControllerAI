@@ -61,19 +61,6 @@ bool ProbeInstanceEndpoint(const std::string& bindAddress, int port) {
 	return response && response->status == 200;
 }
 
-bool WaitForInstanceEndpoint(const std::string& bindAddress, int port, std::chrono::milliseconds timeout) {
-	const auto deadline = std::chrono::steady_clock::now() + timeout;
-	while (std::chrono::steady_clock::now() < deadline) {
-		if (ProbeInstanceEndpoint(bindAddress, port)) {
-			return true;
-		}
-
-		std::this_thread::sleep_for(std::chrono::milliseconds(25));
-	}
-
-	return ProbeInstanceEndpoint(bindAddress, port);
-}
-
 struct InstanceRegistration {
 	std::string bindAddress;
 	int masterPort = -1;

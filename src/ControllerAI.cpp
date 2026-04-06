@@ -54,7 +54,7 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback, std::string bindA
     released(false),
     blockNFrames(1)
 {
-    server = std::make_unique<CControllerAIServer>(bindAddress, port);
+    server = std::make_unique<CControllerAIServer>(this->bindAddress, this->port);
     server->SetLogger([this](const std::string& message) {
         LogCoreMessage(message);
     });

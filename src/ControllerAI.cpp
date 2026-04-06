@@ -64,22 +64,45 @@ CControllerAI::~CControllerAI() {
     Release(0);
 }
 
+void CControllerAI::LogCoreMessage(const std::string& message) const {
+    if (!callback) {
+        return;
+    }
+
+    try {
+        std::unique_ptr<springai::Log> tempLog(callback->GetLog());
+        if (tempLog) {
+            const std::string formatted = std::string("[ControllerAI][Core] ") + message;
+            tempLog->DoLog(formatted.c_str());
+        }
+    } catch (...) {
+    }
+}
+
 void CControllerAI::EnsureInterfacesInitialized() {
     if (!callback) {
         return;
     }
 
     if (!game) {
+        LogCoreMessage("EnsureInterfacesInitialized: acquiring Game wrapper");
         game = std::unique_ptr<springai::Game>(callback->GetGame());
+        LogCoreMessage("EnsureInterfacesInitialized: acquired Game wrapper");
     }
     if (!map) {
+        LogCoreMessage("EnsureInterfacesInitialized: acquiring Map wrapper");
         map = std::unique_ptr<springai::Map>(callback->GetMap());
+        LogCoreMessage("EnsureInterfacesInitialized: acquired Map wrapper");
     }
     if (!log) {
+        LogCoreMessage("EnsureInterfacesInitialized: acquiring Log wrapper");
         log = std::unique_ptr<springai::Log>(callback->GetLog());
+        LogCoreMessage("EnsureInterfacesInitialized: acquired Log wrapper");
     }
     if (!skirmishAI) {
+        LogCoreMessage("EnsureInterfacesInitialized: acquiring SkirmishAI wrapper");
         skirmishAI = std::unique_ptr<springai::SkirmishAI>(callback->GetSkirmishAI());
+        LogCoreMessage("EnsureInterfacesInitialized: acquired SkirmishAI wrapper");
         if (skirmishAI) {
             springai::OptionValues* options = skirmishAI->GetOptionValues();
             if (options) {
@@ -91,13 +114,19 @@ void CControllerAI::EnsureInterfacesInitialized() {
         }
     }
     if (!economy) {
+        LogCoreMessage("EnsureInterfacesInitialized: acquiring Economy wrapper");
         economy = std::unique_ptr<springai::Economy>(callback->GetEconomy());
+        LogCoreMessage("EnsureInterfacesInitialized: acquired Economy wrapper");
     }
     if (!lua) {
+        LogCoreMessage("EnsureInterfacesInitialized: acquiring Lua wrapper");
         lua = std::unique_ptr<springai::Lua>(callback->GetLua());
+        LogCoreMessage("EnsureInterfacesInitialized: acquired Lua wrapper");
     }
     if (!mod) {
+        LogCoreMessage("EnsureInterfacesInitialized: acquiring Mod wrapper");
         mod = std::unique_ptr<springai::Mod>(callback->GetMod());
+        LogCoreMessage("EnsureInterfacesInitialized: acquired Mod wrapper");
     }
 }
 
@@ -1301,6 +1330,7 @@ void CControllerAI::ProcessCommands() {
 
         try {
             std::string type = cmd["type"];
+            LogCoreMessage(std::string("ProcessCommands: handling '") + type + "'");
             int unitId = cmd.value("unitId", -1);
             springai::Unit* unit = (unitId != -1) ? springai::WrappUnit::GetInstance(skirmishAIId, unitId) : nullptr;
             short opts = cmd.value("options", 0);
@@ -1416,7 +1446,9 @@ void CControllerAI::WaitForResume() {
 
     while (running) {
         if (game && game->GetCurrentFrame() < 0 && startupBlocking) {
+            LogCoreMessage("WaitForResume: startup blocking active, waiting for work before frame 0");
             if (!server->WaitForWork()) return;
+            LogCoreMessage("WaitForResume: woke during startup blocking");
             ProcessSettings();
             ProcessQueries();
             ProcessCommands();
@@ -1424,7 +1456,9 @@ void CControllerAI::WaitForResume() {
         }
 
         if (game && canChooseStartPos && !setupComplete) {
+            LogCoreMessage("WaitForResume: waiting for start position setup to complete");
             if (!server->WaitForWork()) return;
+            LogCoreMessage("WaitForResume: woke while waiting for start position setup");
             ProcessSettings();
             ProcessQueries();
             ProcessCommands();
@@ -1524,7 +1558,13 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     }
 
     if (topic != EVENT_RELEASE) {
+        if (topic == EVENT_INIT) {
+            LogCoreMessage("HandleEvent: entering EVENT_INIT");
+        }
         EnsureInterfacesInitialized();
+        if (topic == EVENT_INIT) {
+            LogCoreMessage("HandleEvent: interfaces initialized for EVENT_INIT");
+        }
     }
 
     if (topic != EVENT_RELEASE) {
@@ -1539,9 +1579,15 @@ int CControllerAI::HandleEvent(int topic, const void* data) {
     }
 
     if (topic == EVENT_INIT) {
+        LogCoreMessage("HandleEvent: EVENT_INIT caching static data");
         CacheStaticData();
+        LogCoreMessage("HandleEvent: EVENT_INIT cached static data");
+        LogCoreMessage("HandleEvent: EVENT_INIT publishing initial observation");
         UpdateObservation();
+        LogCoreMessage("HandleEvent: EVENT_INIT published initial observation");
+        LogCoreMessage("HandleEvent: EVENT_INIT entering WaitForResume");
         WaitForResume();
+        LogCoreMessage("HandleEvent: EVENT_INIT resumed");
         return 0;
     }
 

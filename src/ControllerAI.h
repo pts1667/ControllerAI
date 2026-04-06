@@ -55,6 +55,7 @@ private:
     int blockNFrames;
 
     void EnsureInterfacesInitialized();
+    void LogCoreMessage(const std::string& message) const;
 
     // Helper for event serialization
     json EventToJson(int topic, const void* data);

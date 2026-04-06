@@ -282,9 +282,7 @@ private:
 	json BuildRegistryJson(const std::vector<RegistryEntry>& registryEntries) const {
 		json jsonEntries = json::object();
 		for (const RegistryEntry& entry : registryEntries) {
-			if (!ProbeInstanceEndpoint(entry.bindAddress, entry.instancePort)) {
-				continue;
-			}
+			const bool reachable = ProbeInstanceEndpoint(entry.bindAddress, entry.instancePort);
 
 			std::ostringstream httpUrl;
 			httpUrl << "http://" << entry.bindAddress << ":" << entry.instancePort;
@@ -298,6 +296,7 @@ private:
 			jsonEntries[std::to_string(entry.teamId)] = {
 				{"address", entry.bindAddress},
 				{"port", entry.instancePort},
+				{"reachable", reachable},
 				{"endpoint", endpoint.str()},
 				{"httpUrl", httpUrl.str()},
 				{"wsUrl", wsUrl.str()},

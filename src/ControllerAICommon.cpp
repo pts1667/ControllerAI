@@ -30,15 +30,15 @@ size_t FindMatchingBrace(const std::string& text, size_t openBracePos) {
     return std::string::npos;
 }
 
-bool PointInPolygon(const json& polygon, float x, float z) {
+bool PointInPolygon(const nlohmann::json& polygon, float x, float z) {
     if (!polygon.is_array() || polygon.size() < 3) {
         return false;
     }
 
     bool inside = false;
     for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
-        const json& current = polygon[i];
-        const json& previous = polygon[j];
+        const nlohmann::json& current = polygon[i];
+        const nlohmann::json& previous = polygon[j];
         if (!current.is_array() || current.size() < 2 || !previous.is_array() || previous.size() < 2) {
             continue;
         }

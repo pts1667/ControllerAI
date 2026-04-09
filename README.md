@@ -308,6 +308,7 @@ The `type` field will be one of `game_info`, `spawn_boxes`, `metadata`, `map_fea
 Returns the defined start boxes for each ally team.
 - **Keys**: Ally Team IDs.
 - **Values**: `{ "left", "top", "right", "bottom" }` in map coordinates (elmos).
+- Zero-K polygon boxes also include `polygons`, an array of polygons where each polygon is an array of `[x, z]` vertices in elmos. In that case `left/top/right/bottom` remain the polygon bounding box for compatibility.
 
 ### 4. `GET /game_info`
 Returns startup metadata for the current match.

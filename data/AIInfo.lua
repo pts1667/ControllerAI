@@ -50,7 +50,7 @@ local infos = {
 	},
 	{
 		key    = 'interfaceVersion',
-		value  = '0.2', -- AI Interface version - !This comment is used for parsing!
+		value  = '0.1', -- AI Interface version - !This comment is used for parsing!
 		desc   = 'the minimum version of the AI interface this AI needs',
 	},
 }

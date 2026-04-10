@@ -99,6 +99,7 @@ void CControllerAI::CacheStaticData() {
 
     if (mod) {
         gameInfoCache["modName"] = detail::SafeCString(mod->GetHumanName());
+        gameInfoCache["gametype"] = detail::SafeCString(mod->GetShortName());
     }
 
     if (map) {
@@ -158,6 +159,10 @@ void CControllerAI::CacheStaticData() {
     mapFeaturesCache["spots"] = json::array();
     mapFeaturesCache["features"] = json::array();
     if (callback && map) {
+        const float waterDamage = map->GetWaterDamage();
+        mapFeaturesCache["waterDamage"] = waterDamage;
+        mapFeaturesCache["waterIsHarmful"] = waterDamage > 0.0f;
+
         std::vector<springai::Resource*> resources = callback->GetResources();
         for (springai::Resource* res_ptr : resources) {
             if (!res_ptr) continue;

@@ -325,6 +325,7 @@ Typical startup flow:
 ```json
 {
     "modName": "Balanced Annihilation",
+    "gametype": "BA",
     "mapName": "TitanDuel 2.2",
     "mapWidth": 1024,
     "mapHeight": 1024,
@@ -349,6 +350,10 @@ Typical startup flow:
 
 ### 5. `GET /map_features`
 Returns resource spots and map features (trees, rocks, etc.).
+
+The payload also includes:
+- `waterDamage`: raw `map->GetWaterDamage()` value.
+- `waterIsHarmful`: `true` when `waterDamage > 0`.
 
 ### 6. `GET /heightmap`
 Returns the dynamic heightmap as a Base64 encoded string of `float32` values.
@@ -397,12 +402,18 @@ Responses are wrapped as:
 If the query is invalid, the endpoint returns HTTP `400` with an `error` field.
 
 Supported query types:
+- `game_rules_param`: requires `key`; optional `defaultFloat` and `defaultString`. Returns both `floatValue` and `stringValue` for the requested game rules param.
+- `game_rules_params`: requires `keys` (JSON array or comma-separated string); optional `defaultFloat` and `defaultString`. Returns a `values` object keyed by param name.
+- `team_rules_param`: requires `key`; optional `teamId`, `defaultFloat`, and `defaultString`. Defaults to the current AI team.
+- `team_rules_params`: requires `keys` (JSON array or comma-separated string); optional `teamId`, `defaultFloat`, and `defaultString`.
 - `unit_def_id_by_name`: requires `name`.
 - `unit_def_by_id`: requires `unitDefId`. Returns the full serialized `UnitDef` table.
 - `unit_def_by_name`: requires `name`. Returns the full serialized `UnitDef` table.
 - `unit_def_id_by_unit_id`: requires `unitId`.
 - `unit_def_by_unit_id`: requires `unitId`. Returns the full serialized `UnitDef` table for that unit's current definition.
 - `unit_by_id`: requires `unitId`. Returns an expanded unit snapshot including its full serialized `definition`.
+- `unit_rules_param`: requires `unitId` and `key`; optional `defaultFloat` and `defaultString`. Returns both `floatValue` and `stringValue`.
+- `unit_rules_params`: requires `unitId` and `keys` (JSON array or comma-separated string); optional `defaultFloat` and `defaultString`.
 - `feature_by_id`: requires `featureId`.
 - `feature_def_by_id`: requires `featureDefId`.
 - `feature_def_by_name`: requires `name`.
@@ -410,6 +421,13 @@ Supported query types:
 - `resource_spots_by_name`: requires `name`.
 - `nearest_resource_spot`: requires `name` plus `pos` or `x`/`z`.
 - `elevation_at`: requires `pos` or `x`/`z`.
+- `height_map`: no extra parameters. Returns the height map as Base64 encoded `float32` data with `width` and `height`.
+- `water_damage`: no extra parameters. Returns `waterDamage` plus `waterIsHarmful`.
+- `slope_map`: no extra parameters. Returns the slope map as Base64 encoded `float32` data with `width` and `height`.
+- `ai_option_by_key`: requires `key`.
+- `ai_options`: optional `keys` (JSON array or comma-separated string). Without `keys`, returns all AI option values.
+- `ai_info_by_key`: requires `key`.
+- `ai_info`: optional `keys` (JSON array or comma-separated string). Without `keys`, returns all AI info values.
 - `start_position`: no extra parameters.
 - `can_build_at`: requires `unitDefId` plus `pos` or `x`/`z`; optional `facing`.
 - `closest_build_site`: requires `unitDefId`, `searchRadius`, and `pos` or `x`/`z`; optional `minDist` and `facing`.
@@ -418,8 +436,15 @@ Supported query types:
 
 ```text
 GET /query?type=unit_def_id_by_name&name=cloakraid
+GET /query?type=game_rules_param&key=mex_count
+GET /query?type=team_rules_param&key=start_box_id
+GET /query?type=unit_rules_params&unitId=1024&keys=disarmed,noammo,comm_level
 GET /query?type=unit_def_by_id&unitDefId=52
 GET /query?type=unit_def_by_unit_id&unitId=1024
+GET /query?type=height_map
+GET /query?type=water_damage
+GET /query?type=slope_map
+GET /query?type=ai_options
 GET /query?type=closest_build_site&unitDefId=52&x=1200&z=3400&searchRadius=600&minDist=2&facing=0
 ```
 

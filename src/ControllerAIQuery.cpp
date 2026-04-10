@@ -8,16 +8,23 @@
 #include "Feature.h"
 #include "FeatureDef.h"
 #include "Game.h"
+#include "Info.h"
 #include "Map.h"
 #include "OOAICallback.h"
+#include "OptionValues.h"
 #include "Resource.h"
+#include "SkirmishAI.h"
+#include "Team.h"
 #include "Unit.h"
 #include "UnitDef.h"
 #include "WrappFeature.h"
+#include "WrappTeam.h"
 #include "WrappUnit.h"
 #include "WrappUnitDef.h"
 
 #include <algorithm>
+#include <cctype>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -71,6 +78,143 @@ std::string ReadStringValue(const json& query, const char* key) {
     }
 
     return value.get<std::string>();
+}
+
+std::string TrimAsciiWhitespace(std::string value) {
+    std::size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+        ++start;
+    }
+
+    std::size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+
+    return value.substr(start, end - start);
+}
+
+std::vector<std::string> ReadStringListValue(const json& query, const char* key) {
+    if (!query.contains(key)) {
+        throw std::runtime_error(std::string("Missing query parameter: ") + key);
+    }
+
+    const json& value = query.at(key);
+    std::vector<std::string> result;
+
+    if (value.is_string()) {
+        std::string raw = value.get<std::string>();
+        std::size_t start = 0;
+        while (start <= raw.size()) {
+            const std::size_t end = raw.find(',', start);
+            std::string item = TrimAsciiWhitespace(raw.substr(start, end == std::string::npos ? std::string::npos : end - start));
+            if (!item.empty()) {
+                result.push_back(std::move(item));
+            }
+
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+    } else if (value.is_array()) {
+        result.reserve(value.size());
+        for (const json& entry : value) {
+            if (!entry.is_string()) {
+                throw std::runtime_error(std::string("Query parameter '") + key + "' must contain only strings.");
+            }
+
+            std::string item = TrimAsciiWhitespace(entry.get<std::string>());
+            if (!item.empty()) {
+                result.push_back(std::move(item));
+            }
+        }
+    } else {
+        throw std::runtime_error(std::string("Query parameter '") + key + "' must be a string or an array of strings.");
+    }
+
+    if (result.empty()) {
+        throw std::runtime_error(std::string("Query parameter '") + key + "' must not be empty.");
+    }
+
+    return result;
+}
+
+float ReadOptionalFloatValue(const json& query, const char* key, float defaultValue) {
+    return query.contains(key) ? ReadFloatValue(query, key) : defaultValue;
+}
+
+std::string ReadOptionalStringValue(const json& query, const char* key, const std::string& defaultValue) {
+    return query.contains(key) ? ReadStringValue(query, key) : defaultValue;
+}
+
+json SerializeRulesParamValue(float floatValue, const char* stringValue) {
+    return json({
+        {"floatValue", floatValue},
+        {"stringValue", detail::SafeCString(stringValue)}
+    });
+}
+
+template <typename Source>
+json SerializeRulesParams(Source* source, const std::vector<std::string>& keys, float defaultFloat, const std::string& defaultString) {
+    json result = json::object();
+    for (const std::string& key : keys) {
+        result[key] = SerializeRulesParamValue(
+            source->GetRulesParamFloat(key.c_str(), defaultFloat),
+            source->GetRulesParamString(key.c_str(), defaultString.c_str())
+        );
+    }
+    return result;
+}
+
+json SerializeOptionValues(springai::OptionValues* options, const std::vector<std::string>* keys = nullptr) {
+    json result = json::object();
+    if (!options) {
+        return result;
+    }
+
+    if (keys != nullptr) {
+        for (const std::string& key : *keys) {
+            result[key] = detail::SafeCString(options->GetValueByKey(key.c_str()));
+        }
+        return result;
+    }
+
+    const int size = options->GetSize();
+    for (int index = 0; index < size; ++index) {
+        const char* key = options->GetKey(index);
+        if (!key) {
+            continue;
+        }
+        result[key] = detail::SafeCString(options->GetValue(index));
+    }
+
+    return result;
+}
+
+json SerializeInfoValues(springai::Info* info, const std::vector<std::string>* keys = nullptr) {
+    json result = json::object();
+    if (!info) {
+        return result;
+    }
+
+    if (keys != nullptr) {
+        for (const std::string& key : *keys) {
+            result[key] = detail::SafeCString(info->GetValueByKey(key.c_str()));
+        }
+        return result;
+    }
+
+    const int size = info->GetSize();
+    for (int index = 0; index < size; ++index) {
+        const char* key = info->GetKey(index);
+        if (!key) {
+            continue;
+        }
+        result[key] = detail::SafeCString(info->GetValue(index));
+    }
+
+    return result;
 }
 
 springai::AIFloat3 ReadPositionValue(const json& query) {
@@ -156,6 +300,68 @@ json CControllerAI::HandleQuery(const json& query) {
 
     const std::string type = ReadStringValue(query, "type");
 
+    if (type == "game_rules_param") {
+        if (!game) {
+            throw std::runtime_error("Game interface is not available.");
+        }
+
+        const std::string key = ReadStringValue(query, "key");
+        const float defaultFloat = ReadOptionalFloatValue(query, "defaultFloat", 0.0f);
+        const std::string defaultString = ReadOptionalStringValue(query, "defaultString", "");
+        json result = SerializeRulesParamValue(
+            game->GetRulesParamFloat(key.c_str(), defaultFloat),
+            game->GetRulesParamString(key.c_str(), defaultString.c_str())
+        );
+        result["key"] = key;
+        return result;
+    }
+
+    if (type == "game_rules_params") {
+        if (!game) {
+            throw std::runtime_error("Game interface is not available.");
+        }
+
+        const std::vector<std::string> keys = ReadStringListValue(query, "keys");
+        const float defaultFloat = ReadOptionalFloatValue(query, "defaultFloat", 0.0f);
+        const std::string defaultString = ReadOptionalStringValue(query, "defaultString", "");
+        return json({
+            {"values", SerializeRulesParams(game.get(), keys, defaultFloat, defaultString)}
+        });
+    }
+
+    if (type == "team_rules_param" || type == "team_rules_params") {
+        const int defaultTeamId = game ? game->GetMyTeam() : (skirmishAI ? skirmishAI->GetTeamId() : -1);
+        const int teamId = query.contains("teamId") ? ReadIntValue(query, "teamId") : defaultTeamId;
+        if (teamId < 0) {
+            throw std::runtime_error("Team interface is not available.");
+        }
+
+        std::unique_ptr<springai::Team> team(springai::WrappTeam::GetInstance(skirmishAIId, teamId));
+        if (!team) {
+            throw std::runtime_error("Unknown Team ID.");
+        }
+
+        const float defaultFloat = ReadOptionalFloatValue(query, "defaultFloat", 0.0f);
+        const std::string defaultString = ReadOptionalStringValue(query, "defaultString", "");
+
+        if (type == "team_rules_param") {
+            const std::string key = ReadStringValue(query, "key");
+            json result = SerializeRulesParamValue(
+                team->GetRulesParamFloat(key.c_str(), defaultFloat),
+                team->GetRulesParamString(key.c_str(), defaultString.c_str())
+            );
+            result["teamId"] = teamId;
+            result["key"] = key;
+            return result;
+        }
+
+        const std::vector<std::string> keys = ReadStringListValue(query, "keys");
+        return json({
+            {"teamId", teamId},
+            {"values", SerializeRulesParams(team.get(), keys, defaultFloat, defaultString)}
+        });
+    }
+
     if (type == "unit_def_id_by_name") {
         springai::UnitDef* unitDef = callback->GetUnitDefByName(ReadStringValue(query, "name").c_str());
         if (!unitDef) {
@@ -212,6 +418,33 @@ json CControllerAI::HandleQuery(const json& query) {
             throw std::runtime_error("Unknown Unit ID.");
         }
         return detail::SerializeUnitDetails(unit, callback);
+    }
+
+    if (type == "unit_rules_param" || type == "unit_rules_params") {
+        springai::Unit* unit = springai::WrappUnit::GetInstance(skirmishAIId, ReadIntValue(query, "unitId"));
+        if (!unit) {
+            throw std::runtime_error("Unknown Unit ID.");
+        }
+
+        const float defaultFloat = ReadOptionalFloatValue(query, "defaultFloat", 0.0f);
+        const std::string defaultString = ReadOptionalStringValue(query, "defaultString", "");
+
+        if (type == "unit_rules_param") {
+            const std::string key = ReadStringValue(query, "key");
+            json result = SerializeRulesParamValue(
+                unit->GetRulesParamFloat(key.c_str(), defaultFloat),
+                unit->GetRulesParamString(key.c_str(), defaultString.c_str())
+            );
+            result["unitId"] = unit->GetUnitId();
+            result["key"] = key;
+            return result;
+        }
+
+        const std::vector<std::string> keys = ReadStringListValue(query, "keys");
+        return json({
+            {"unitId", unit->GetUnitId()},
+            {"values", SerializeRulesParams(unit, keys, defaultFloat, defaultString)}
+        });
     }
 
     if (type == "feature_by_id") {
@@ -314,6 +547,120 @@ json CControllerAI::HandleQuery(const json& query) {
             {"pos", json::array({pos.x, pos.y, pos.z})},
             {"elevation", map->GetElevationAt(pos.x, pos.z)}
         });
+    }
+
+    if (type == "water_damage") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        const float waterDamage = map->GetWaterDamage();
+        return json({
+            {"waterDamage", waterDamage},
+            {"waterIsHarmful", waterDamage > 0.0f}
+        });
+    }
+
+    if (type == "height_map") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        std::vector<float> heights = map->GetHeightMap();
+        return json({
+            {"width", map->GetWidth()},
+            {"height", map->GetHeight()},
+            {"data_b64", detail::Base64Encode(
+                reinterpret_cast<const unsigned char*>(heights.data()),
+                heights.size() * sizeof(float)
+            )}
+        });
+    }
+
+    if (type == "slope_map") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        std::vector<float> slopes = map->GetSlopeMap();
+        return json({
+            {"width", map->GetWidth() / 2},
+            {"height", map->GetHeight() / 2},
+            {"data_b64", detail::Base64Encode(
+                reinterpret_cast<const unsigned char*>(slopes.data()),
+                slopes.size() * sizeof(float)
+            )}
+        });
+    }
+
+    if (type == "ai_option_by_key") {
+        if (!skirmishAI) {
+            throw std::runtime_error("SkirmishAI interface is not available.");
+        }
+
+        const std::string key = ReadStringValue(query, "key");
+        std::unique_ptr<springai::OptionValues> options(skirmishAI->GetOptionValues());
+        if (!options) {
+            throw std::runtime_error("AI options are not available.");
+        }
+
+        return json({
+            {"key", key},
+            {"value", detail::SafeCString(options->GetValueByKey(key.c_str()))}
+        });
+    }
+
+    if (type == "ai_options") {
+        if (!skirmishAI) {
+            throw std::runtime_error("SkirmishAI interface is not available.");
+        }
+
+        std::unique_ptr<springai::OptionValues> options(skirmishAI->GetOptionValues());
+        if (!options) {
+            throw std::runtime_error("AI options are not available.");
+        }
+
+        if (query.contains("keys")) {
+            const std::vector<std::string> keys = ReadStringListValue(query, "keys");
+            return SerializeOptionValues(options.get(), &keys);
+        }
+
+        return SerializeOptionValues(options.get());
+    }
+
+    if (type == "ai_info_by_key") {
+        if (!skirmishAI) {
+            throw std::runtime_error("SkirmishAI interface is not available.");
+        }
+
+        const std::string key = ReadStringValue(query, "key");
+        std::unique_ptr<springai::Info> info(skirmishAI->GetInfo());
+        if (!info) {
+            throw std::runtime_error("AI info is not available.");
+        }
+
+        return json({
+            {"key", key},
+            {"value", detail::SafeCString(info->GetValueByKey(key.c_str()))}
+        });
+    }
+
+    if (type == "ai_info") {
+        if (!skirmishAI) {
+            throw std::runtime_error("SkirmishAI interface is not available.");
+        }
+
+        std::unique_ptr<springai::Info> info(skirmishAI->GetInfo());
+        if (!info) {
+            throw std::runtime_error("AI info is not available.");
+        }
+
+        if (query.contains("keys")) {
+            const std::vector<std::string> keys = ReadStringListValue(query, "keys");
+            return SerializeInfoValues(info.get(), &keys);
+        }
+
+        return SerializeInfoValues(info.get());
     }
 
     if (type == "start_position") {

@@ -167,12 +167,19 @@ void CControllerAI::CacheStaticData() {
         for (springai::Resource* res_ptr : resources) {
             if (!res_ptr) continue;
 
-            std::vector<springai::AIFloat3> spots = map->GetResourceMapSpotsPositions(res_ptr);
-            for (const auto& spot_pos : spots) {
-                json s;
+            json resourceSpots = detail::GetResourceSpotsData(game.get(), map.get(), res_ptr);
+            if (resourceSpots.contains("averageIncome")) {
+                mapFeaturesCache["averageIncomeByResource"][detail::SafeCString(res_ptr->GetName())] = resourceSpots["averageIncome"];
+            }
+
+            if (!resourceSpots.contains("spots") || !resourceSpots["spots"].is_array()) {
+                continue;
+            }
+
+            for (const json& spot : resourceSpots["spots"]) {
+                json s = spot;
                 s["resource"] = detail::SafeCString(res_ptr->GetName());
-                s["pos"] = json::array({spot_pos.x, spot_pos.y, spot_pos.z});
-                mapFeaturesCache["spots"].push_back(s);
+                mapFeaturesCache["spots"].push_back(std::move(s));
             }
         }
 

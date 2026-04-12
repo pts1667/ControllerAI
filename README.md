@@ -354,6 +354,9 @@ Returns resource spots and map features (trees, rocks, etc.).
 The payload also includes:
 - `waterDamage`: raw `map->GetWaterDamage()` value.
 - `waterIsHarmful`: `true` when `waterDamage > 0`.
+- `spots[*].pos`: world position `[x, y, z]`.
+- `spots[*].income`: extractor income for that spot.
+- `averageIncomeByResource`: average spot income keyed by resource name.
 
 ### 6. `GET /heightmap`
 Returns the dynamic heightmap as a Base64 encoded string of `float32` values.
@@ -418,8 +421,8 @@ Supported query types:
 - `feature_def_by_id`: requires `featureDefId`.
 - `feature_def_by_name`: requires `name`.
 - `resource_by_name`: requires `name`.
-- `resource_spots_by_name`: requires `name`.
-- `nearest_resource_spot`: requires `name` plus `pos` or `x`/`z`.
+- `resource_spots_by_name`: requires `name`. Returns normalized spot entries as `{ pos, income }` and prefers `mex_count` / `mex_*` game rules params for metal when present, matching CircuitAI.
+- `nearest_resource_spot`: requires `name` plus `pos` or `x`/`z`. Returns the nearest normalized spot with `pos` and `income`.
 - `elevation_at`: requires `pos` or `x`/`z`.
 - `height_map`: no extra parameters. Returns the height map as Base64 encoded `float32` data with `width` and `height`.
 - `water_damage`: no extra parameters. Returns `waterDamage` plus `waterIsHarmful`.

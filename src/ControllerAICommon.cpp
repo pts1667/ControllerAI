@@ -2,9 +2,11 @@
 
 #include "Game.h"
 #include "Map.h"
+#include "Resource.h"
 
 #include <algorithm>
 #include <cctype>
+#include <vector>
 #include <regex>
 
 namespace controllerai {
@@ -58,6 +60,13 @@ bool PointInPolygon(const nlohmann::json& polygon, float x, float z) {
     return inside;
 }
 
+std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
 } // namespace
 
 namespace detail {
@@ -107,6 +116,58 @@ std::string Base64Encode(const unsigned char* data, size_t len) {
         }
     }
 
+    return result;
+}
+
+json GetResourceSpotsData(springai::Game* game, springai::Map* map, springai::Resource* resource) {
+    json result = {
+        {"resource", resource ? SafeCString(resource->GetName()) : std::string()},
+        {"averageIncome", 0.0f},
+        {"spots", json::array()}
+    };
+
+    if (!map || !resource) {
+        return result;
+    }
+
+    const std::string resourceName = ToLowerAscii(SafeCString(resource->GetName()));
+    if (game && resourceName == "metal") {
+        int mexCount = static_cast<int>(game->GetRulesParamFloat("mex_count", -1.0f));
+        if (mexCount > 0) {
+            mexCount = std::min(mexCount, 1000);
+            float totalIncome = 0.0f;
+
+            for (int index = 0; index < mexCount; ++index) {
+                const std::string suffix = std::to_string(index + 1);
+                const float x = game->GetRulesParamFloat(("mex_x" + suffix).c_str(), 0.0f);
+                const float y = game->GetRulesParamFloat(("mex_y" + suffix).c_str(), 0.0f);
+                const float z = game->GetRulesParamFloat(("mex_z" + suffix).c_str(), 0.0f);
+                const float income = game->GetRulesParamFloat(("mex_metal" + suffix).c_str(), 0.0f);
+
+                result["spots"].push_back({
+                    {"pos", json::array({x, y, z})},
+                    {"income", income}
+                });
+                totalIncome += income;
+            }
+
+            if (mexCount > 0) {
+                result["averageIncome"] = totalIncome / static_cast<float>(mexCount);
+            }
+
+            return result;
+        }
+    }
+
+    const std::vector<springai::AIFloat3> positions = map->GetResourceMapSpotsPositions(resource);
+    for (const springai::AIFloat3& spot : positions) {
+        result["spots"].push_back({
+            {"pos", json::array({spot.x, map->GetElevationAt(spot.x, spot.z), spot.z})},
+            {"income", spot.y}
+        });
+    }
+
+    result["averageIncome"] = map->GetResourceMapSpotsAverageIncome(resource);
     return result;
 }
 

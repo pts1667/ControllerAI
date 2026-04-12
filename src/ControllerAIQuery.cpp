@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -276,6 +277,33 @@ springai::FeatureDef* FindFeatureDefByName(springai::OOAICallback* callback, con
     return nullptr;
 }
 
+json FindNearestSpot(const json& spots, const springai::AIFloat3& origin) {
+    float bestDistanceSq = std::numeric_limits<float>::max();
+    json bestSpot;
+
+    if (!spots.is_array()) {
+        return bestSpot;
+    }
+
+    for (const json& spot : spots) {
+        if (!spot.is_object() || !spot.contains("pos") || !spot["pos"].is_array() || spot["pos"].size() < 3) {
+            continue;
+        }
+
+        const float x = spot["pos"][0].get<float>();
+        const float z = spot["pos"][2].get<float>();
+        const float dx = x - origin.x;
+        const float dz = z - origin.z;
+        const float distanceSq = dx * dx + dz * dz;
+        if (distanceSq < bestDistanceSq) {
+            bestDistanceSq = distanceSq;
+            bestSpot = spot;
+        }
+    }
+
+    return bestSpot;
+}
+
 } // namespace
 
 json CControllerAI::GetSettings() const {
@@ -479,9 +507,10 @@ json CControllerAI::HandleQuery(const json& query) {
 
         json result = detail::SerializeResource(resource);
         if (map) {
+            json resourceSpots = detail::GetResourceSpotsData(game.get(), map.get(), resource);
             result["extractorRadius"] = map->GetExtractorRadius(resource);
             result["maxResource"] = map->GetMaxResource(resource);
-            result["averageSpotIncome"] = map->GetResourceMapSpotsAverageIncome(resource);
+            result["averageSpotIncome"] = resourceSpots.value("averageIncome", map->GetResourceMapSpotsAverageIncome(resource));
         }
         if (economy) {
             result["economy"] = {
@@ -505,17 +534,7 @@ json CControllerAI::HandleQuery(const json& query) {
             throw std::runtime_error("Unknown resource name.");
         }
 
-        json spots = json::array();
-        std::vector<springai::AIFloat3> positions = map->GetResourceMapSpotsPositions(resource);
-        for (const springai::AIFloat3& pos : positions) {
-            spots.push_back(json::array({pos.x, pos.y, pos.z}));
-        }
-
-        return json({
-            {"resource", detail::SafeCString(resource->GetName())},
-            {"averageIncome", map->GetResourceMapSpotsAverageIncome(resource)},
-            {"spots", spots}
-        });
+        return detail::GetResourceSpotsData(game.get(), map.get(), resource);
     }
 
     if (type == "nearest_resource_spot") {
@@ -529,11 +548,17 @@ json CControllerAI::HandleQuery(const json& query) {
         }
 
         const springai::AIFloat3 origin = ReadPositionValue(query);
-        const springai::AIFloat3 nearest = map->GetResourceMapSpotsNearest(resource, origin);
+        json resourceSpots = detail::GetResourceSpotsData(game.get(), map.get(), resource);
+        json nearestSpot = FindNearestSpot(resourceSpots.value("spots", json::array()), origin);
+        if (nearestSpot.is_null() || nearestSpot.empty()) {
+            throw std::runtime_error("No resource spots available.");
+        }
+
         return json({
             {"resource", detail::SafeCString(resource->GetName())},
             {"from", json::array({origin.x, origin.y, origin.z})},
-            {"pos", json::array({nearest.x, nearest.y, nearest.z})}
+            {"pos", nearestSpot["pos"]},
+            {"income", nearestSpot.value("income", 0.0f)}
         });
     }
 

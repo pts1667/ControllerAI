@@ -7,6 +7,8 @@
 
 namespace springai {
 class OOAICallback;
+class Command;
+class CommandDescription;
 class Resource;
 class WeaponDef;
 class WeaponMount;
@@ -24,6 +26,8 @@ namespace detail {
 using json = nlohmann::json;
 
 json SerializeResource(springai::Resource* resource);
+json SerializeCommand(springai::Command* command);
+json SerializeCommandDescription(springai::CommandDescription* commandDescription);
 json SerializeWeaponDefRef(springai::WeaponDef* weaponDef);
 json SerializeWeaponMount(springai::WeaponMount* weaponMount);
 json SerializeMoveData(springai::MoveData* moveData);

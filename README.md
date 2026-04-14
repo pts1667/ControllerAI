@@ -415,6 +415,9 @@ Supported query types:
 - `unit_def_id_by_unit_id`: requires `unitId`.
 - `unit_def_by_unit_id`: requires `unitId`. Returns the full serialized `UnitDef` table for that unit's current definition.
 - `unit_by_id`: requires `unitId`. Returns an expanded unit snapshot including its full serialized `definition`.
+- `unit_current_commands`: requires `unitId`. Returns the live `Unit::GetCurrentCommands()` queue plus `count` and `hasCommands`.
+- `unit_supported_commands`: requires `unitId`. Returns the unit's supported command metadata from `GetSupportedCommands()`.
+- `unit_queue_state`: requires `unitId`. Returns `currentCommandCount`, `hasCommands`, `isIdle`, `stockpile`, `stockpileQueued`, and the current command queue.
 - `unit_rules_param`: requires `unitId` and `key`; optional `defaultFloat` and `defaultString`. Returns both `floatValue` and `stringValue`.
 - `unit_rules_params`: requires `unitId` and `keys` (JSON array or comma-separated string); optional `defaultFloat` and `defaultString`.
 - `feature_by_id`: requires `featureId`.
@@ -441,6 +444,8 @@ Supported query types:
 GET /query?type=unit_def_id_by_name&name=cloakraid
 GET /query?type=game_rules_param&key=mex_count
 GET /query?type=team_rules_param&key=start_box_id
+GET /query?type=unit_current_commands&unitId=1024
+GET /query?type=unit_queue_state&unitId=1024
 GET /query?type=unit_rules_params&unitId=1024&keys=disarmed,noammo,comm_level
 GET /query?type=unit_def_by_id&unitDefId=52
 GET /query?type=unit_def_by_unit_id&unitId=1024
@@ -449,6 +454,81 @@ GET /query?type=water_damage
 GET /query?type=slope_map
 GET /query?type=ai_options
 GET /query?type=closest_build_site&unitDefId=52&x=1200&z=3400&searchRadius=600&minDist=2&facing=0
+```
+
+**Example `unit_current_commands` response:**
+
+```json
+{
+    "query": {
+        "type": "unit_current_commands",
+        "unitId": 1024
+    },
+    "result": {
+        "unitId": 1024,
+        "count": 2,
+        "hasCommands": true,
+        "commands": [
+            {
+                "commandId": 0,
+                "type": 0,
+                "id": 10,
+                "options": 0,
+                "tag": 554433,
+                "timeout": 2147483647,
+                "params": [1200.0, 15.0, 3400.0]
+            },
+            {
+                "commandId": 1,
+                "type": 0,
+                "id": 15,
+                "options": 32,
+                "tag": 554434,
+                "timeout": 2147483647,
+                "params": [1600.0, 12.0, 3600.0]
+            }
+        ]
+    }
+}
+```
+
+**Example `unit_queue_state` response:**
+
+```json
+{
+    "query": {
+        "type": "unit_queue_state",
+        "unitId": 1024
+    },
+    "result": {
+        "unitId": 1024,
+        "currentCommandCount": 2,
+        "hasCommands": true,
+        "isIdle": false,
+        "stockpile": 0,
+        "stockpileQueued": 0,
+        "commands": [
+            {
+                "commandId": 0,
+                "type": 0,
+                "id": 10,
+                "options": 0,
+                "tag": 554433,
+                "timeout": 2147483647,
+                "params": [1200.0, 15.0, 3400.0]
+            },
+            {
+                "commandId": 1,
+                "type": 0,
+                "id": 15,
+                "options": 32,
+                "tag": 554434,
+                "timeout": 2147483647,
+                "params": [1600.0, 12.0, 3600.0]
+            }
+        ]
+    }
+}
 ```
 
 **WebSocket query example:**

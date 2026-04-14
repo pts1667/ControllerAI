@@ -4,6 +4,8 @@
 #include "ControllerAISerialization.h"
 #include "ControllerAIServer.h"
 
+#include "Command.h"
+#include "CommandDescription.h"
 #include "Economy.h"
 #include "Feature.h"
 #include "FeatureDef.h"
@@ -304,6 +306,36 @@ json FindNearestSpot(const json& spots, const springai::AIFloat3& origin) {
     return bestSpot;
 }
 
+json SerializeCurrentCommands(springai::Unit* unit) {
+    json commands = json::array();
+    if (!unit) {
+        return commands;
+    }
+
+    std::vector<springai::Command*> currentCommands = unit->GetCurrentCommands();
+    for (springai::Command* command : currentCommands) {
+        commands.push_back(detail::SerializeCommand(command));
+        delete command;
+    }
+
+    return commands;
+}
+
+json SerializeSupportedCommands(springai::Unit* unit) {
+    json commands = json::array();
+    if (!unit) {
+        return commands;
+    }
+
+    std::vector<springai::CommandDescription*> supportedCommands = unit->GetSupportedCommands();
+    for (springai::CommandDescription* command : supportedCommands) {
+        commands.push_back(detail::SerializeCommandDescription(command));
+        delete command;
+    }
+
+    return commands;
+}
+
 } // namespace
 
 json CControllerAI::GetSettings() const {
@@ -446,6 +478,53 @@ json CControllerAI::HandleQuery(const json& query) {
             throw std::runtime_error("Unknown Unit ID.");
         }
         return detail::SerializeUnitDetails(unit, callback);
+    }
+
+    if (type == "unit_current_commands") {
+        springai::Unit* unit = springai::WrappUnit::GetInstance(skirmishAIId, ReadIntValue(query, "unitId"));
+        if (!unit) {
+            throw std::runtime_error("Unknown Unit ID.");
+        }
+
+        json commands = SerializeCurrentCommands(unit);
+        return json({
+            {"unitId", unit->GetUnitId()},
+            {"count", commands.size()},
+            {"hasCommands", !commands.empty()},
+            {"commands", std::move(commands)}
+        });
+    }
+
+    if (type == "unit_supported_commands") {
+        springai::Unit* unit = springai::WrappUnit::GetInstance(skirmishAIId, ReadIntValue(query, "unitId"));
+        if (!unit) {
+            throw std::runtime_error("Unknown Unit ID.");
+        }
+
+        json commands = SerializeSupportedCommands(unit);
+        return json({
+            {"unitId", unit->GetUnitId()},
+            {"count", commands.size()},
+            {"commands", std::move(commands)}
+        });
+    }
+
+    if (type == "unit_queue_state") {
+        springai::Unit* unit = springai::WrappUnit::GetInstance(skirmishAIId, ReadIntValue(query, "unitId"));
+        if (!unit) {
+            throw std::runtime_error("Unknown Unit ID.");
+        }
+
+        json commands = SerializeCurrentCommands(unit);
+        return json({
+            {"unitId", unit->GetUnitId()},
+            {"currentCommandCount", commands.size()},
+            {"hasCommands", !commands.empty()},
+            {"isIdle", commands.empty()},
+            {"stockpile", unit->GetStockpile()},
+            {"stockpileQueued", unit->GetStockpileQueued()},
+            {"commands", std::move(commands)}
+        });
     }
 
     if (type == "unit_rules_param" || type == "unit_rules_params") {

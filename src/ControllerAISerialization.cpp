@@ -4,6 +4,8 @@
 
 #include "ExternalAI/Interface/AISEvents.h"
 
+#include "Command.h"
+#include "CommandDescription.h"
 #include "OOAICallback.h"
 #include "Feature.h"
 #include "FeatureDef.h"
@@ -30,6 +32,43 @@ json SerializeResource(springai::Resource* resource) {
         {"id", resource->GetResourceId()},
         {"name", SafeCString(resource->GetName())},
         {"optimum", resource->GetOptimum()}
+    });
+}
+
+json SerializeCommand(springai::Command* command) {
+    if (!command) {
+        return json();
+    }
+
+    return json({
+        {"commandId", command->GetCommandId()},
+        {"type", command->GetType()},
+        {"id", command->GetId()},
+        {"options", command->GetOptions()},
+        {"tag", command->GetTag()},
+        {"timeout", command->GetTimeOut()},
+        {"params", command->GetParams()}
+    });
+}
+
+json SerializeCommandDescription(springai::CommandDescription* commandDescription) {
+    if (!commandDescription) {
+        return json();
+    }
+
+    json params = json::array();
+    for (const char* value : commandDescription->GetParams()) {
+        params.push_back(SafeCString(value));
+    }
+
+    return json({
+        {"supportedCommandId", commandDescription->GetSupportedCommandId()},
+        {"id", commandDescription->GetId()},
+        {"name", SafeCString(commandDescription->GetName())},
+        {"tooltip", SafeCString(commandDescription->GetToolTip())},
+        {"showUnique", commandDescription->IsShowUnique()},
+        {"disabled", commandDescription->IsDisabled()},
+        {"params", std::move(params)}
     });
 }
 

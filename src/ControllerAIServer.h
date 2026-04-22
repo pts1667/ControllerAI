@@ -20,6 +20,16 @@ using json = nlohmann::json;
 
 class CControllerAIServer {
 public:
+    struct PendingWorkState {
+        bool hasCommands = false;
+        bool hasQueries = false;
+        bool hasSettings = false;
+
+        bool HasAny() const {
+            return hasCommands || hasQueries || hasSettings;
+        }
+    };
+
     CControllerAIServer(std::string bindAddress, int port);
     ~CControllerAIServer();
 
@@ -43,6 +53,8 @@ public:
     void ProcessSettings(const std::function<json(const json&)>& handler);
     std::vector<json> DrainCommands();
     bool WaitForWork();
+    bool WaitForWorkFor(int timeoutMs);
+    PendingWorkState GetPendingWorkState();
 
 private:
     struct WebSocketSession {

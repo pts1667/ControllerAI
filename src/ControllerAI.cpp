@@ -86,6 +86,20 @@ void CControllerAI::EnsureInterfacesInitialized() {
     }
 }
 
+void CControllerAI::LogToInfolog(const std::string& message) {
+    if (!callback) {
+        return;
+    }
+
+    if (!log) {
+        log = std::unique_ptr<springai::Log>(callback->GetLog());
+    }
+
+    if (log) {
+        log->DoLog(message.c_str());
+    }
+}
+
 void CControllerAI::CacheStaticData() {
     if (!server) {
         return;

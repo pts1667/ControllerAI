@@ -26,6 +26,16 @@ class CControllerAIServer;
 
 class CControllerAI {
 private:
+    struct PendingWorkState {
+        bool hasCommands = false;
+        bool hasQueries = false;
+        bool hasSettings = false;
+
+        bool HasAny() const {
+            return hasCommands || hasQueries || hasSettings;
+        }
+    };
+
     springai::OOAICallback* callback;
     int skirmishAIId;
 
@@ -56,6 +66,7 @@ private:
     int blockNFrames;
 
     void EnsureInterfacesInitialized();
+    void LogToInfolog(const std::string& message);
 
     // Internal processing
     void UpdateObservation();

@@ -330,9 +330,61 @@ std::vector<json> CControllerAIServer::DrainCommands() {
     return commands;
 }
 
+CControllerAIServer::PendingWorkState CControllerAIServer::GetPendingWorkState() {
+    PendingWorkState state;
+
+    {
+        std::lock_guard<std::mutex> lock(commandMutex);
+        state.hasCommands = !commandQueue.empty();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(queryMutex);
+        state.hasQueries = !queryQueue.empty();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(settingsMutex);
+        state.hasSettings = !settingsQueue.empty();
+    }
+
+    return state;
+}
+
 bool CControllerAIServer::WaitForWork() {
     std::unique_lock<std::mutex> lock(commandMutex);
     commandCv.wait(lock, [this]() {
+        if (!running.load() || !commandQueue.empty()) {
+            return true;
+        }
+
+        std::lock_guard<std::mutex> queryLock(queryMutex);
+        if (!queryQueue.empty()) {
+            return true;
+        }
+
+        std::lock_guard<std::mutex> settingsLock(settingsMutex);
+        return !settingsQueue.empty();
+    });
+
+    bool hasQueries = false;
+    {
+        std::lock_guard<std::mutex> queryLock(queryMutex);
+        hasQueries = !queryQueue.empty();
+    }
+
+    bool hasSettings = false;
+    {
+        std::lock_guard<std::mutex> settingsLock(settingsMutex);
+        hasSettings = !settingsQueue.empty();
+    }
+
+    return running.load() || !commandQueue.empty() || hasQueries || hasSettings;
+}
+
+bool CControllerAIServer::WaitForWorkFor(int timeoutMs) {
+    std::unique_lock<std::mutex> lock(commandMutex);
+    commandCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this]() {
         if (!running.load() || !commandQueue.empty()) {
             return true;
         }

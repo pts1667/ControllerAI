@@ -16,7 +16,9 @@
 #include "WrappUnit.h"
 #include "WrappUnitDef.h"
 
+#include <chrono>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 #include <vector>
 
@@ -131,8 +133,18 @@ void CControllerAI::ProcessCommands() {
 
     std::vector<json> commands = server->DrainCommands();
     for (json& cmd : commands) {
+        std::string type = "<unknown>";
+        if (cmd.is_object()) {
+            type = cmd.value("type", std::string("<missing>"));
+        } else {
+            type = "<non-object>";
+        }
+
         try {
-            std::string type = cmd["type"];
+            if (!cmd.is_object()) {
+                throw std::runtime_error("Command payload must be a JSON object.");
+            }
+
             int unitId = cmd.value("unitId", -1);
             springai::Unit* unit = (unitId != -1) ? springai::WrappUnit::GetInstance(skirmishAIId, unitId) : nullptr;
             short opts = cmd.value("options", 0);
@@ -254,7 +266,18 @@ void CControllerAI::ProcessCommands() {
                     frameFinished = true;
                 }
             }
+        } catch (const std::exception& e) {
+            std::ostringstream message;
+            message << "ControllerAI: command execution failed"
+                    << " type=" << type
+                    << " error=" << e.what();
+            LogToInfolog(message.str());
         } catch (...) {
+            std::ostringstream message;
+            message << "ControllerAI: command execution failed"
+                    << " type=" << type
+                    << " error=<unknown exception>";
+            LogToInfolog(message.str());
         }
     }
 }
@@ -264,9 +287,34 @@ void CControllerAI::WaitForResume() {
         return;
     }
 
+    auto waitForWorkWithLogging = [this](const char* context) {
+        while (running) {
+            if (!server->WaitForWorkFor(1000)) {
+                return false;
+            }
+
+            const CControllerAIServer::PendingWorkState workState = server->GetPendingWorkState();
+            if (workState.HasAny()) {
+                return true;
+            }
+
+            std::ostringstream message;
+            message << "ControllerAI: WaitForResume blocked >1s"
+                    << " context=" << context
+                    << " frame=" << (game ? game->GetCurrentFrame() : -1)
+                    << " frameFinished=" << (frameFinished ? "true" : "false")
+                    << " commandQueueNonEmpty=" << (workState.hasCommands ? "true" : "false")
+                    << " queryQueueNonEmpty=" << (workState.hasQueries ? "true" : "false")
+                    << " settingsQueueNonEmpty=" << (workState.hasSettings ? "true" : "false");
+            LogToInfolog(message.str());
+        }
+
+        return false;
+    };
+
     while (running) {
         if (game && game->GetCurrentFrame() < 0 && startupBlocking) {
-            if (!server->WaitForWork()) {
+            if (!waitForWorkWithLogging("startup")) {
                 return;
             }
             ProcessSettings();
@@ -276,7 +324,7 @@ void CControllerAI::WaitForResume() {
         }
 
         if (game && canChooseStartPos && !setupComplete) {
-            if (!server->WaitForWork()) {
+            if (!waitForWorkWithLogging("choose_start_pos")) {
                 return;
             }
             ProcessSettings();
@@ -289,7 +337,7 @@ void CControllerAI::WaitForResume() {
             return;
         }
 
-        if (!server->WaitForWork()) {
+        if (!waitForWorkWithLogging("frame_sync")) {
             return;
         }
         ProcessSettings();

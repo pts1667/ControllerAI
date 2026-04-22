@@ -81,6 +81,46 @@ void CControllerAI::UpdateObservation() {
         observation["radarBlips"][std::to_string(unitId)] = blip;
     }
 
+    observation["features"] = json::object();
+    springai::Resource* metalResource = callback->GetResourceByName("Metal");
+    if (!metalResource) {
+        std::vector<springai::Resource*> resources = callback->GetResources();
+        for (springai::Resource* resource : resources) {
+            if (!resource) {
+                continue;
+            }
+
+            const std::string resourceName = detail::SafeCString(resource->GetName());
+            if (resourceName == "Metal" || resourceName == "metal") {
+                metalResource = resource;
+                break;
+            }
+        }
+    }
+
+    std::vector<springai::Feature*> features = callback->GetFeatures();
+    for (springai::Feature* feature : features) {
+        if (!feature) {
+            continue;
+        }
+
+        springai::FeatureDef* featureDef = feature->GetDef();
+        if (!featureDef || !featureDef->IsReclaimable() || !metalResource) {
+            continue;
+        }
+
+        if (featureDef->GetContainedResource(metalResource) < 1.0f) {
+            continue;
+        }
+
+        json data = detail::SerializeFeature(feature, callback);
+        if (!data.is_object()) {
+            continue;
+        }
+
+        observation["features"][std::to_string(feature->GetFeatureId())] = std::move(data);
+    }
+
     observation["economy"] = json::object();
     std::vector<springai::Resource*> resources = callback->GetResources();
     for (springai::Resource* resource : resources) {

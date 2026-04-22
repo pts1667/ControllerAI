@@ -34,29 +34,29 @@ def discover_instances():
 
 
 def make_state():
-    return {
-        "game_info": None,
-        "spawn_boxes": None,
-        "metadata": None,
-        "map_features": None,
-        "heightmap": None,
-        "startup_complete": False,
-    }
-
-
-def send(ws, payload):
-    ws.send(json.dumps(payload))
-
-
-def connect_new_instances(clients):
-    for team_id, instance in discover_instances().items():
-        if team_id in clients or not instance.get("reachable", True):
-            continue
-
-        try:
-            ws = create_connection(instance["wsUrl"], timeout=SOCKET_TIMEOUT_SEC)
-            ws.settimeout(SOCKET_TIMEOUT_SEC)
+    "features": {
+        "7001": {
+            "id": 7001,
+            "pos": [152.0, 11.5, 298.0],
+            "health": 420.0,
+            "reclaimLeft": 1.0,
+            "buildingFacing": 0,
+            "defId": 301,
+            "name": "armwar_dead",
+            "definition": {
+                "id": 301,
+                "name": "armwar_dead",
+                "containedResources": {
+                    "Metal": 110.0
+                },
+                "isReclaimable": true
+            },
+            "resurrectDef": {
+                "id": 123,
+                "name": "armwar"
+            }
         except OSError as exc:
+    },
             print(f"team {team_id}: connect failed: {exc}")
             continue
 
@@ -269,6 +269,29 @@ If `block_n_frames` is greater than `1`, the observation is refreshed every N po
       "isRadarBlip": true
     }
   },
+    "features": {
+        "7001": {
+            "id": 7001,
+            "pos": [152.0, 11.5, 298.0],
+            "health": 420.0,
+            "reclaimLeft": 1.0,
+            "buildingFacing": 0,
+            "defId": 301,
+            "name": "armwar_dead",
+            "definition": {
+                "id": 301,
+                "name": "armwar_dead",
+                "containedResources": {
+                    "Metal": 110.0
+                },
+                "isReclaimable": true
+            },
+            "resurrectDef": {
+                "id": 123,
+                "name": "armwar"
+            }
+        }
+    },
   "economy": { ... },
   "events": [
     { "topic": 2, "unitId": 1025, "builderId": 1024 }
@@ -276,7 +299,7 @@ If `block_n_frames` is greater than `1`, the observation is refreshed every N po
 }
 ```
 
-`enemies` contains units currently in LOS. `radarBlips` contains enemy contacts available through radar/sensor coverage but not currently in LOS.
+`enemies` contains units currently in LOS. `radarBlips` contains enemy contacts available through radar/sensor coverage but not currently in LOS. `features` contains the current live set of reclaimable features with at least `1.0` metal, which is primarily useful for wreckage and other metal-bearing reclaim targets.
 
 ### 2. `GET /metadata`
 Returns static data about all unit types available in the current game/mod.
@@ -349,7 +372,7 @@ Typical startup flow:
 ```
 
 ### 5. `GET /map_features`
-Returns resource spots and map features (trees, rocks, etc.).
+Returns resource spots and the startup snapshot of map features (trees, rocks, etc.). This is separate from `observation.features`, which is the live per-frame set of reclaimable metal-bearing features such as wrecks.
 
 The payload also includes:
 - `waterDamage`: raw `map->GetWaterDamage()` value.

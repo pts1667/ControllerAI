@@ -6,6 +6,7 @@
 
 #include "Economy.h"
 #include "Feature.h"
+#include "FeatureDef.h"
 #include "Game.h"
 #include "Lua.h"
 #include "OOAICallback.h"

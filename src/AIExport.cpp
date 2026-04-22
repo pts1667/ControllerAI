@@ -10,7 +10,14 @@
 #include "WrappOOAICallback.h"
 
 #include "ControllerAI.h"
+
+// hack needed for cross-compile with mingw
+#pragma push_macro("_WIN32_WINNT")
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00 // Windows 10 or later
 #include "httplib.h"
+#pragma pop_macro("_WIN32_WINNT")
+
 #include "nlohmann/json.hpp"
 
 #include <chrono>

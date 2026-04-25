@@ -7,7 +7,8 @@
 
 namespace controllerai {
 
-CControllerAIServer::CControllerAIServer(std::string bindAddress, int port) :
+CControllerAIServer::CControllerAIServer(std::string bindAddress, int port, std::function<void(const std::string&)> infologSink) :
+    infologSink(std::move(infologSink)),
     bindAddress(std::move(bindAddress)),
     port(port),
     running(false),
@@ -28,6 +29,19 @@ CControllerAIServer::~CControllerAIServer() {
 
 std::string CControllerAIServer::BuildWebSocketMessage(const std::string& type, const json& data) const {
     return json({{"type", type}, {"data", data}}).dump();
+}
+
+void CControllerAIServer::LogToInfolog(const std::string& message) const {
+    if (infologSink) {
+        infologSink(message);
+    }
+}
+
+void CControllerAIServer::ReportWebSocketError(const std::shared_ptr<WebSocketSession>& session, const std::string& message, bool enqueueClientError) {
+    LogToInfolog("ControllerAI: " + message);
+    if (enqueueClientError && session) {
+        EnqueueWebSocketMessage(session, BuildWebSocketMessage("error", json({{"message", message}})));
+    }
 }
 
 json CControllerAIServer::BuildHttpQuery(const httplib::Request& req) const {
@@ -627,34 +641,49 @@ void CControllerAIServer::ConfigureRoutes() {
 
         SendCurrentStateToWebSocketSession(session);
 
-        std::thread sender([session, &ws]() {
-            while (true) {
-                std::string payload;
-                bool shouldCloseSocket = false;
-                {
-                    std::unique_lock<std::mutex> lock(session->mutex);
-                    session->cv.wait(lock, [&]() {
-                        return session->closed || !session->outgoingMessages.empty();
-                    });
+        std::thread sender([this, session, &ws]() {
+            try {
+                while (true) {
+                    std::string payload;
+                    bool shouldCloseSocket = false;
+                    {
+                        std::unique_lock<std::mutex> lock(session->mutex);
+                        session->cv.wait(lock, [&]() {
+                            return session->closed || !session->outgoingMessages.empty();
+                        });
 
-                    if (session->closed) {
-                        shouldCloseSocket = true;
-                    } else {
-                        payload = std::move(session->outgoingMessages.front());
-                        session->outgoingMessages.pop();
+                        if (session->closed) {
+                            shouldCloseSocket = true;
+                        } else {
+                            payload = std::move(session->outgoingMessages.front());
+                            session->outgoingMessages.pop();
+                        }
+                    }
+
+                    if (shouldCloseSocket) {
+                        if (ws.is_open()) {
+                            ws.close(httplib::ws::CloseStatus::GoingAway, "server shutdown");
+                        }
+                        break;
+                    }
+
+                    if (!ws.send(payload)) {
+                        ReportWebSocketError(session, "WebSocket send failed; closing session.", false);
+                        if (ws.is_open()) {
+                            ws.close();
+                        }
+                        break;
                     }
                 }
-
-                if (shouldCloseSocket) {
-                    if (ws.is_open()) {
-                        ws.close(httplib::ws::CloseStatus::GoingAway, "server shutdown");
-                    }
-                    break;
-                }
-
-                if (!ws.send(payload)) {
+            } catch (const std::exception& e) {
+                ReportWebSocketError(session, std::string("WebSocket sender exception: ") + e.what(), false);
+                if (ws.is_open()) {
                     ws.close();
-                    break;
+                }
+            } catch (...) {
+                ReportWebSocketError(session, "WebSocket sender exception: unknown error.", false);
+                if (ws.is_open()) {
+                    ws.close();
                 }
             }
 
@@ -666,18 +695,42 @@ void CControllerAIServer::ConfigureRoutes() {
         });
 
         std::string message;
-        while (running.load() && ws.is_open()) {
-            auto readResult = ws.read(message);
-            if (!readResult) {
-                break;
-            }
-
-            if (readResult == httplib::ws::Text) {
-                try {
-                    HandleWebSocketPayload(session, json::parse(message));
-                } catch (const std::exception& e) {
-                    EnqueueWebSocketMessage(session, BuildWebSocketMessage("error", json({{"message", e.what()}})));
+        try {
+            while (running.load() && ws.is_open()) {
+                auto readResult = ws.read(message);
+                if (!readResult) {
+                    if (running.load() && ws.is_open()) {
+                        ReportWebSocketError(session, "WebSocket read failed while the connection was still open.", false);
+                    }
+                    break;
                 }
+
+                if (readResult == httplib::ws::Text) {
+                    try {
+                        HandleWebSocketPayload(session, json::parse(message));
+                    } catch (const std::exception& e) {
+                        ReportWebSocketError(session, std::string("WebSocket message handling failed: ") + e.what());
+                    } catch (...) {
+                        ReportWebSocketError(session, "WebSocket message handling failed: unknown error.");
+                    }
+                    continue;
+                }
+
+                ReportWebSocketError(session, "Unsupported WebSocket frame type received: binary frames are not supported.");
+            }
+        } catch (const std::exception& e) {
+            ReportWebSocketError(session, std::string("WebSocket read loop failed: ") + e.what(), false);
+        } catch (...) {
+            ReportWebSocketError(session, "WebSocket read loop failed: unknown error.", false);
+        }
+
+        if (ws.is_open()) {
+            try {
+                ws.close();
+            } catch (const std::exception& e) {
+                LogToInfolog(std::string("ControllerAI: WebSocket close failed: ") + e.what());
+            } catch (...) {
+                LogToInfolog("ControllerAI: WebSocket close failed: unknown error.");
             }
         }
 

@@ -36,7 +36,7 @@ public:
         }
     };
 
-    CControllerAIServer(std::string bindAddress, int port);
+    CControllerAIServer(std::string bindAddress, int port, std::function<void(const std::string&)> infologSink = {});
     ~CControllerAIServer();
 
     void Start();
@@ -102,7 +102,10 @@ private:
     void HandleWebSocketPayload(const std::shared_ptr<WebSocketSession>& session, json payload);
     void HandleWebSocketCommandOrRequest(const std::shared_ptr<WebSocketSession>& session, json payload);
     void RemoveWebSocketSession(const std::shared_ptr<WebSocketSession>& session);
+    void LogToInfolog(const std::string& message) const;
+    void ReportWebSocketError(const std::shared_ptr<WebSocketSession>& session, const std::string& message, bool enqueueClientError = true);
 
+    std::function<void(const std::string&)> infologSink;
     std::string bindAddress;
     int port;
 

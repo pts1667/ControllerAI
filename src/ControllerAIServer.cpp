@@ -1,11 +1,71 @@
 #include "ControllerAIServer.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
 #include <chrono>
+#include <system_error>
 #include <thread>
 #include <utility>
 
 namespace controllerai {
+namespace {
+
+std::string TrimTrailingWhitespace(std::string value) {
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::string DescribeLastSocketError() {
+#if defined(_WIN32)
+    const int errorCode = WSAGetLastError();
+    if (errorCode == 0) {
+        return std::string();
+    }
+
+    std::string message = TrimTrailingWhitespace(std::system_category().message(errorCode));
+    if (message.empty()) {
+        return "WSA error " + std::to_string(errorCode);
+    }
+
+    return "WSA error " + std::to_string(errorCode) + " (" + message + ")";
+#else
+    const int errorCode = errno;
+    if (errorCode == 0) {
+        return std::string();
+    }
+
+    std::string message = TrimTrailingWhitespace(std::system_category().message(errorCode));
+    if (message.empty()) {
+        return "errno " + std::to_string(errorCode);
+    }
+
+    return "errno " + std::to_string(errorCode) + " (" + message + ")";
+#endif
+}
+
+std::string DescribeWebSocketSendFailure(httplib::ws::WebSocket& ws, size_t payloadSize) {
+    std::string message = "WebSocket send failed";
+
+    if (!ws.is_open()) {
+        message += ": socket already closed";
+    } else {
+        const std::string socketError = DescribeLastSocketError();
+        if (!socketError.empty()) {
+            message += ": " + socketError;
+        } else {
+            message += ": write returned failure without a reported socket error";
+        }
+    }
+
+    message += "; payloadSize=" + std::to_string(payloadSize);
+    message += "; closing session.";
+    return message;
+}
+
+} // namespace
 
 CControllerAIServer::CControllerAIServer(std::string bindAddress, int port, std::function<void(const std::string&)> infologSink) :
     infologSink(std::move(infologSink)),
@@ -668,7 +728,7 @@ void CControllerAIServer::ConfigureRoutes() {
                     }
 
                     if (!ws.send(payload)) {
-                        ReportWebSocketError(session, "WebSocket send failed; closing session.", false);
+                        ReportWebSocketError(session, DescribeWebSocketSendFailure(ws, payload.size()), false);
                         if (ws.is_open()) {
                             ws.close();
                         }

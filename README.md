@@ -450,6 +450,7 @@ Supported query types:
 - `resource_spots_by_name`: requires `name`. Returns normalized spot entries as `{ pos, income }` and prefers `mex_count` / `mex_*` game rules params for metal when present, matching CircuitAI.
 - `nearest_resource_spot`: requires `name` plus `pos` or `x`/`z`. Returns the nearest normalized spot with `pos` and `income`.
 - `elevation_at`: requires `pos` or `x`/`z`.
+- `position_in_los`: requires `pos` or `x`/`z`. Returns whether the map position is currently in line-of-sight.
 - `height_map`: no extra parameters. Returns the height map as Base64 encoded `float32` data with `width` and `height`.
 - `water_damage`: no extra parameters. Returns `waterDamage` plus `waterIsHarmful`.
 - `slope_map`: no extra parameters. Returns the slope map as Base64 encoded `float32` data with `width` and `height`.
@@ -472,6 +473,7 @@ GET /query?type=unit_queue_state&unitId=1024
 GET /query?type=unit_rules_params&unitId=1024&keys=disarmed,noammo,comm_level
 GET /query?type=unit_def_by_id&unitDefId=52
 GET /query?type=unit_def_by_unit_id&unitId=1024
+GET /query?type=position_in_los&x=1200&z=3400
 GET /query?type=height_map
 GET /query?type=water_damage
 GET /query?type=slope_map

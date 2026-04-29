@@ -653,6 +653,18 @@ json CControllerAI::HandleQuery(const json& query) {
         });
     }
 
+    if (type == "position_in_los") {
+        if (!map) {
+            throw std::runtime_error("Map interface is not available.");
+        }
+
+        const springai::AIFloat3 pos = ReadPositionValue(query);
+        return json({
+            {"pos", json::array({pos.x, pos.y, pos.z})},
+            {"inLos", map->IsInLos(pos)}
+        });
+    }
+
     if (type == "water_damage") {
         if (!map) {
             throw std::runtime_error("Map interface is not available.");

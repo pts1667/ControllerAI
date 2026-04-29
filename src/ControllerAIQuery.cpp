@@ -661,7 +661,7 @@ json CControllerAI::HandleQuery(const json& query) {
         const springai::AIFloat3 pos = ReadPositionValue(query);
         return json({
             {"pos", json::array({pos.x, pos.y, pos.z})},
-            {"inLos", map->IsInLos(pos)}
+            {"inLos", IsPositionInLos(pos)}
         });
     }
 

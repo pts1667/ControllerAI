@@ -22,6 +22,12 @@
 
 namespace controllerai {
 
+namespace {
+
+constexpr int kMapSquareSize = 8;
+
+}
+
 CControllerAI::CControllerAI(springai::OOAICallback* callback, std::string bindAddress, int port, int masterPort) :
     callback(callback),
     skirmishAIId(callback != nullptr ? callback->GetSkirmishAIId() : -1),
@@ -37,7 +43,11 @@ CControllerAI::CControllerAI(springai::OOAICallback* callback, std::string bindA
     frameFinished(true),
     startupBlocking(true),
     released(false),
-    blockNFrames(1)
+    blockNFrames(1),
+    losMapWidth(0),
+    losMapHeight(0),
+    losMapResolution(0),
+    losMapFrame(-1)
 {
     server = std::make_unique<CControllerAIServer>(
         this->bindAddress,
@@ -90,6 +100,49 @@ void CControllerAI::EnsureInterfacesInitialized() {
     if (!mod) {
         mod = std::unique_ptr<springai::Mod>(callback->GetMod());
     }
+}
+
+void CControllerAI::RefreshLosMapCache() {
+    if (!map || !mod) {
+        losMapCache.clear();
+        losMapWidth = 0;
+        losMapHeight = 0;
+        losMapResolution = 0;
+        losMapFrame = -1;
+        return;
+    }
+
+    const int currentFrame = game ? game->GetCurrentFrame() : -1;
+    if (!losMapCache.empty() && losMapFrame == currentFrame && losMapWidth > 0 && losMapHeight > 0 && losMapResolution > 0) {
+        return;
+    }
+
+    const int losMipLevel = mod->GetLosMipLevel();
+    losMapCache = map->GetLosMap();
+    losMapWidth = map->GetWidth() >> losMipLevel;
+    losMapHeight = map->GetHeight() >> losMipLevel;
+    losMapResolution = kMapSquareSize << losMipLevel;
+    losMapFrame = currentFrame;
+}
+
+bool CControllerAI::IsPositionInLos(const springai::AIFloat3& pos) {
+    RefreshLosMapCache();
+    if (losMapCache.empty() || losMapWidth <= 0 || losMapHeight <= 0 || losMapResolution <= 0) {
+        return false;
+    }
+
+    const int x = static_cast<int>(pos.x) / losMapResolution;
+    const int z = static_cast<int>(pos.z) / losMapResolution;
+    if (x < 0 || z < 0 || x >= losMapWidth || z >= losMapHeight) {
+        return false;
+    }
+
+    const std::size_t index = static_cast<std::size_t>(z * losMapWidth + x);
+    if (index >= losMapCache.size()) {
+        return false;
+    }
+
+    return losMapCache[index] > 0;
 }
 
 void CControllerAI::LogToInfolog(const std::string& message) {

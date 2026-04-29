@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace springai {
 class OOAICallback;
@@ -64,8 +65,15 @@ private:
     bool startupBlocking;
     bool released;
     int blockNFrames;
+    std::vector<int> losMapCache;
+    int losMapWidth;
+    int losMapHeight;
+    int losMapResolution;
+    int losMapFrame;
 
     void EnsureInterfacesInitialized();
+    void RefreshLosMapCache();
+    bool IsPositionInLos(const springai::AIFloat3& pos);
     void LogToInfolog(const std::string& message);
 
     // Internal processing

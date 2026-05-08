@@ -2,7 +2,6 @@
 
 ControllerAI is an AI for Zero-K/BAR that starts a server from which you can controller your AI.
 Each AI gets its own server. First poll the master server to get the actual list of ControllerAIs.
-You will need to know the team ID list ahead of time, but you can get this from the start script when the match is started.
 
 ## AI Disclaimer
 
